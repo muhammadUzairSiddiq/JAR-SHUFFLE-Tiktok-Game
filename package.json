@@ -1,0 +1,10 @@
+{
+  "name": "cup-shuffle-creator-3-8-7",
+  "version": "1.0.0",
+  "description": "Simple 2D cup & ball shuffle game skeleton for Cocos Creator 3.8.7",
+  "license": "MIT",
+  "creator": {
+    "version": "3.8.7"
+  },
+  "uuid": "abc68116-e2dc-4ae9-944c-40bb02b91a5d"
+}

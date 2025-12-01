@@ -1,0 +1,662 @@
+import { _decorator, Component, Node, tween, Vec3, Label, Button, math, EventTouch, UITransform, input, Input, Camera, view, Vec2, EventMouse } from 'cc';
+const { ccclass, property } = _decorator;
+
+@ccclass('CupShuffleGame')
+export class CupShuffleGame extends Component {
+
+    @property([Node])
+    cups: Node[] = []; // Jars (renamed from cups but keeping variable name for compatibility)
+
+    @property([Node])
+    hands: Node[] = []; // Hand nodes for animation (typically 2 hands)
+
+    @property(Node)
+    ball: Node = null!;
+
+    @property(Label)
+    resultLabel: Label = null!;
+
+    @property
+    swapsPerRound: number = 10;
+
+    @property
+    swapSpeed: number = 0.35; // Speed controller - higher value = slower shuffle
+
+    @property
+    handGrabOffset: Vec3 = new Vec3(0, 50, 0); // Offset when hand grabs a jar (higher Y = hands above jars)
+
+    @property
+    idleAnimationAmplitude: number = 3; // How much hands move during idle (very subtle)
+    
+    @property
+    idleAnimationSpeed: number = 1.5; // Speed of idle animation
+
+    private ballIndex: number = 1;
+    private ballCup: Node | null = null; // Track which cup node has the ball
+    private isShuffling = false;
+    private waitingForInput = false;
+    private consecutiveWins = 0;
+    private baseSwapsPerRound = 10;
+    private baseSwapSpeed = 0.35;
+    private idleTweens: any[] = []; // Store idle animation tweens
+
+    onLoad() {
+        // Start button removed - game auto-starts
+    }
+
+    start() {
+        // Store initial hand positions for reset
+        for (let i = 0; i < this.hands.length; i++) {
+            if (this.hands[i]) {
+                (this.hands[i] as any).initialPosition = this.hands[i].position.clone();
+            }
+        }
+        
+        // Setup cup click listeners
+        this.setupCupListeners();
+        
+        // Hide ball initially
+        if (this.ball) {
+            this.ball.active = false;
+        }
+        
+        this.baseSwapsPerRound = this.swapsPerRound;
+        this.baseSwapSpeed = this.swapSpeed;
+        
+        // Check if cups are assigned
+        if (!this.cups.length) {
+            if (this.resultLabel) {
+                this.resultLabel.string = 'ERROR: Assign cups in editor!';
+            }
+            console.error('CupShuffleGame: Cups array is empty! Please assign cups in Cocos Creator editor.');
+            return;
+        } else {
+            console.log('CupShuffleGame: Initialized with', this.cups.length, 'cups');
+        }
+        
+        // Auto-start immediately
+        if (this.resultLabel) {
+            this.resultLabel.string = 'Starting...';
+        }
+        
+        // Add mouse/touch input at canvas level for web
+        input.on(Input.EventType.MOUSE_DOWN, this.onMouseDown, this);
+        input.on(Input.EventType.TOUCH_START, this.onTouchStart, this);
+        
+        // Start idle animations for hands
+        this.startIdleAnimations();
+        
+        // Start game after a brief delay
+        this.scheduleOnce(() => {
+            console.log('Auto-starting game...');
+            this.onStart();
+        }, 0.5);
+    }
+    
+    private onMouseDown(event: EventMouse) {
+        if (!this.waitingForInput || this.isShuffling) return;
+        
+        const location = event.getLocation();
+        console.log('Mouse down at:', location.x, location.y);
+        
+        this.checkClickPosition(location);
+    }
+    
+    private onTouchStart(event: EventTouch) {
+        if (!this.waitingForInput || this.isShuffling) return;
+        
+        const location = event.getLocation();
+        console.log('Touch start at:', location.x, location.y);
+        
+        this.checkClickPosition(location);
+    }
+    
+    private checkClickPosition(screenPos: Vec2) {
+        // Get the camera
+        const camera = Camera.main || this.node.scene?.getComponentInChildren(Camera);
+        if (!camera) {
+            console.warn('No camera found');
+            return;
+        }
+        
+        // Get canvas for UI coordinate conversion
+        const canvas = this.node.scene?.getComponentInChildren('cc.Canvas');
+        const canvasUITransform = canvas?.node?.getComponent(UITransform);
+        
+        // Convert screen to world position using camera
+        const tempVec = new Vec3(screenPos.x, screenPos.y, 0);
+        const worldPos = new Vec3();
+        camera.screenToWorld(worldPos, tempVec);
+        
+        // Also try converting using viewport
+        const viewport = camera.viewport;
+        const screenSize = view.getVisibleSize();
+        
+        // For orthographic 2D camera, convert manually
+        const orthoHeight = camera.orthoHeight || 320;
+        const aspect = screenSize.width / screenSize.height;
+        const orthoWidth = orthoHeight * aspect;
+        
+        // Convert screen coordinates (0,0 at bottom-left) to world coordinates
+        // Screen Y is from bottom, but we need to account for camera position
+        const cameraPos = camera.node.worldPosition;
+        const worldX = (screenPos.x / screenSize.width - 0.5) * orthoWidth * 2 + cameraPos.x;
+        const worldY = ((screenSize.height - screenPos.y) / screenSize.height - 0.5) * orthoHeight * 2 + cameraPos.y;
+        
+        const convertedWorldPos = new Vec3(worldX, worldY, 0);
+        
+        console.log('Screen:', screenPos.x.toFixed(1), screenPos.y.toFixed(1), 
+                   'Camera method:', worldPos.x.toFixed(1), worldPos.y.toFixed(1),
+                   'Manual method:', convertedWorldPos.x.toFixed(1), convertedWorldPos.y.toFixed(1));
+        
+        // Use the manually converted position
+        const clickWorldPos = convertedWorldPos;
+        
+        // Check which cup contains this position
+        let closestCup = -1;
+        let closestDistance = Infinity;
+        
+        for (let i = 0; i < this.cups.length; i++) {
+            const cup = this.cups[i];
+            if (!cup || !cup.active) continue;
+            
+            const cupPos = cup.worldPosition;
+            const cupUITransform = cup.getComponent(UITransform);
+            
+            console.log(`Cup ${i} position:`, cupPos.x.toFixed(1), cupPos.y.toFixed(1));
+            
+            if (cupUITransform) {
+                // Use UITransform bounds
+                const size = cupUITransform.contentSize;
+                const anchor = cupUITransform.anchorPoint;
+                const scale = cup.worldScale;
+                
+                const width = size.width * scale.x;
+                const height = size.height * scale.y;
+                
+                const left = cupPos.x - width * anchor.x;
+                const right = cupPos.x + width * (1 - anchor.x);
+                const bottom = cupPos.y - height * anchor.y;
+                const top = cupPos.y + height * (1 - anchor.y);
+                
+                console.log(`Cup ${i} bounds:`, left.toFixed(1), right.toFixed(1), bottom.toFixed(1), top.toFixed(1));
+                
+                if (clickWorldPos.x >= left && clickWorldPos.x <= right && 
+                    clickWorldPos.y >= bottom && clickWorldPos.y <= top) {
+                    console.log(`✓ Cup ${i} clicked! (bounds check)`);
+                    this.onCupClicked(i, null);
+                    return;
+                }
+            }
+            
+            // Track closest cup
+            const distance = Vec3.distance(clickWorldPos, cupPos);
+            console.log(`Cup ${i} distance:`, distance.toFixed(1));
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closestCup = i;
+            }
+        }
+        
+        // Fallback: use closest cup if within reasonable distance
+        if (closestCup >= 0 && closestDistance < 150) {
+            console.log(`✓ Cup ${closestCup} clicked! (distance: ${closestDistance.toFixed(1)})`);
+            this.onCupClicked(closestCup, null);
+        } else {
+            console.log('✗ Click not on any cup. Closest:', closestCup, 'Distance:', closestDistance.toFixed(1));
+        }
+    }
+    
+
+    private setupCupListeners() {
+        for (let i = 0; i < this.cups.length; i++) {
+            const cup = this.cups[i];
+            if (cup) {
+                // Ensure cup node is active
+                cup.active = true;
+                
+                // Find UITransform - check cup itself first, then children
+                let uiTransform = cup.getComponent(UITransform);
+                let targetNode = cup;
+                
+                if (!uiTransform) {
+                    // Check children for UITransform (sprite might be in child)
+                    const children = cup.children;
+                    for (let j = 0; j < children.length; j++) {
+                        uiTransform = children[j].getComponent(UITransform);
+                        if (uiTransform) {
+                            targetNode = children[j];
+                            break;
+                        }
+                    }
+                }
+                
+                // If still no UITransform, add it to the cup
+                if (!uiTransform) {
+                    console.log(`Adding UITransform to cup ${i}`);
+                    uiTransform = cup.addComponent(UITransform);
+                    if (uiTransform) {
+                        // Set a reasonable size for touch detection
+                        uiTransform.setContentSize(150, 200);
+                    }
+                    targetNode = cup;
+                }
+                
+                // Store cup index for click handler
+                (targetNode as any).cupIndex = i;
+                (cup as any).cupIndex = i;
+                
+                // Remove any existing listeners first
+                targetNode.off(Node.EventType.TOUCH_START);
+                targetNode.off(Node.EventType.TOUCH_END);
+                targetNode.off(Node.EventType.TOUCH_MOVE);
+                
+                // Add touch listeners to the node with UITransform
+                targetNode.on(Node.EventType.TOUCH_START, (event: EventTouch) => {
+                    console.log(`Cup ${i} TOUCH_START detected!`);
+                }, this);
+                
+                targetNode.on(Node.EventType.TOUCH_END, (event: EventTouch) => {
+                    console.log(`Cup ${i} TOUCH_END detected!`);
+                    this.onCupClicked(i, event);
+                }, this);
+                
+                // Also add to parent cup node as backup
+                if (targetNode !== cup) {
+                    cup.on(Node.EventType.TOUCH_END, (event: EventTouch) => {
+                        console.log(`Cup ${i} (parent) TOUCH_END detected!`);
+                        this.onCupClicked(i, event);
+                    }, this);
+                }
+                
+                console.log(`Cup ${i} listener setup complete. UITransform:`, !!uiTransform, 'Target:', targetNode.name);
+            }
+        }
+    }
+
+    onStart() {
+        console.log('onStart called!', 'isShuffling:', this.isShuffling, 'waitingForInput:', this.waitingForInput, 'cups:', this.cups.length);
+        
+        if (this.isShuffling || this.waitingForInput) {
+            console.log('Cannot start - already shuffling or waiting for input');
+            return;
+        }
+        if (!this.cups.length) {
+            if (this.resultLabel) {
+                this.resultLabel.string = 'ERROR: No cups assigned!';
+            }
+            console.error('CupShuffleGame: Cannot start - cups array is empty!');
+            return;
+        }
+        
+        console.log('Starting shuffle...');
+
+        // Stop idle animations during shuffle
+        this.stopIdleAnimations();
+
+        this.isShuffling = true;
+        this.waitingForInput = false;
+        if (this.resultLabel) {
+            this.resultLabel.string = 'Shuffling...';
+        }
+
+        // Hide ball during shuffle
+        if (this.ball) {
+            this.ball.active = false;
+        }
+
+        // Random starting cup for ball
+        this.ballIndex = math.randomRangeInt(0, this.cups.length);
+        this.ballCup = this.cups[this.ballIndex];
+        this.placeBallUnderCup(this.ballIndex);
+
+        // Calculate difficulty based on consecutive wins
+        this.updateDifficulty();
+
+        this.shuffleCups(this.swapsPerRound, () => {
+            this.isShuffling = false;
+            this.waitingForInput = true;
+            
+            // Resume idle animations after shuffle
+            this.startIdleAnimations();
+            
+            if (this.resultLabel) {
+                this.resultLabel.string = 'Click a cup!';
+            }
+            console.log('Shuffling complete! Waiting for cup click. Ball is under cup index:', this.ballIndex);
+            // Ball stays hidden until user clicks
+        });
+    }
+
+    private onCupClicked(cupIndex: number, event: EventTouch | null) {
+        console.log(`onCupClicked called! Cup: ${cupIndex}, waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
+        
+        if (!this.waitingForInput || this.isShuffling) {
+            console.log('Ignoring click - not waiting for input or still shuffling');
+            return;
+        }
+        if (cupIndex < 0 || cupIndex >= this.cups.length) {
+            console.log('Invalid cup index:', cupIndex);
+            return;
+        }
+        
+        // Disable all cups temporarily to prevent double clicks
+        this.waitingForInput = false;
+        
+        console.log(`Processing click on cup ${cupIndex}`);
+        this.checkAnswer(cupIndex);
+    }
+
+    private checkAnswer(clickedIndex: number) {
+        this.waitingForInput = false;
+        
+        // Find which cup node has the ball (the winning cup)
+        let winningCupIndex = -1;
+        if (this.ballCup) {
+            for (let i = 0; i < this.cups.length; i++) {
+                if (this.cups[i] === this.ballCup) {
+                    winningCupIndex = i;
+                    break;
+                }
+            }
+        }
+        
+        // Fallback to ballIndex if ballCup not found
+        if (winningCupIndex === -1) {
+            winningCupIndex = this.ballIndex;
+        }
+        
+        // Show the ball
+        if (this.ball && this.ballCup) {
+            const cupPos = this.ballCup.position.clone();
+            cupPos.y -= 65;
+            this.ball.setPosition(cupPos);
+            this.ball.active = true;
+        }
+        
+        // Check if user clicked the correct cup
+        const isCorrect = (clickedIndex === winningCupIndex);
+        
+        if (isCorrect) {
+            this.consecutiveWins++;
+            if (this.resultLabel) {
+                this.resultLabel.string = `Correct! Wins: ${this.consecutiveWins}`;
+            }
+            
+            // Wait a bit then start next round
+            this.scheduleOnce(() => {
+                this.onStart();
+            }, 1.5);
+        } else {
+            if (this.resultLabel) {
+                this.resultLabel.string = `Wrong! You had ${this.consecutiveWins} wins. Restarting...`;
+            }
+            this.consecutiveWins = 0;
+            this.resetDifficulty();
+            
+            // Auto-restart after 2 seconds
+            this.scheduleOnce(() => {
+                this.onStart();
+            }, 2);
+        }
+    }
+
+    private updateDifficulty() {
+        // Increase difficulty based on consecutive wins
+        // More wins = more swaps and faster speed (harder to track)
+        const difficultyMultiplier = 1 + (this.consecutiveWins * 0.1);
+        this.swapsPerRound = Math.floor(this.baseSwapsPerRound * difficultyMultiplier);
+        
+        // Speed increases (lower value = faster, but cap at minimum for smoothness)
+        this.swapSpeed = Math.max(0.15, this.baseSwapSpeed / (1 + (this.consecutiveWins * 0.12)));
+        
+        // After 10 wins, make it very difficult
+        if (this.consecutiveWins >= 10) {
+            this.swapsPerRound = Math.floor(this.baseSwapsPerRound * 2.5);
+            this.swapSpeed = Math.max(0.12, this.baseSwapSpeed / 2.5);
+        }
+    }
+
+    private resetDifficulty() {
+        this.swapsPerRound = this.baseSwapsPerRound;
+        this.swapSpeed = this.baseSwapSpeed;
+    }
+
+    private placeBallUnderCup(index: number) {
+        if (!this.ball || !this.cups[index]) return;
+        const cupPos = this.cups[index].position.clone();
+        cupPos.y -= 65;        // adjust if needed
+        this.ball.setPosition(cupPos);
+    }
+
+
+    private shuffleCups(times: number, done: () => void) {
+        if (times <= 0) {
+            // Reset hands to original positions when done
+            this.resetHands();
+            done();
+            return;
+        }
+
+        let a = math.randomRangeInt(0, this.cups.length);
+        let b = math.randomRangeInt(0, this.cups.length);
+        while (b === a) {
+            b = math.randomRangeInt(0, this.cups.length);
+        }
+
+        const jarA = this.cups[a];
+        const jarB = this.cups[b];
+
+        const posA = jarA.position.clone();
+        const posB = jarB.position.clone();
+
+        // Get hands for animation (use first 2 hands, or cycle through available hands)
+        const hand1 = this.hands.length > 0 ? this.hands[0] : null;
+        const hand2 = this.hands.length > 1 ? this.hands[1] : (this.hands.length > 0 ? this.hands[0] : null);
+
+        // Calculate jar top positions (hands must stay at or above jar top)
+        const getJarTopY = (jar: Node) => {
+            const uiTransform = jar.getComponent(UITransform);
+            if (uiTransform) {
+                const size = uiTransform.contentSize;
+                const anchor = uiTransform.anchorPoint;
+                const scale = jar.worldScale;
+                const jarTop = jar.position.y + (size.height * (1 - anchor.y) * scale.y);
+                return jarTop;
+            }
+            // Fallback: assume jar is about 100 units tall
+            return jar.position.y + 50;
+        };
+
+        const jarATopY = getJarTopY(jarA);
+        const jarBTopY = getJarTopY(jarB);
+
+        // Calculate hand positions - ensure they're always at or above jar top with minimum offset
+        // Use the maximum of: jar top, jar position + offset, or jar top + minimum buffer
+        const minHeightAboveJar = 10; // Minimum height above jar top
+        const grabPosA = new Vec3(posA.x, Math.max(jarATopY + minHeightAboveJar, posA.y + this.handGrabOffset.y), posA.z);
+        const grabPosB = new Vec3(posB.x, Math.max(jarBTopY + minHeightAboveJar, posB.y + this.handGrabOffset.y), posB.z);
+        const releasePosA = new Vec3(posB.x, Math.max(jarBTopY + minHeightAboveJar, posB.y + this.handGrabOffset.y), posB.z);
+        const releasePosB = new Vec3(posA.x, Math.max(jarATopY + minHeightAboveJar, posA.y + this.handGrabOffset.y), posA.z);
+
+        // Animation timing - sequential and smooth with better proportions
+        const grabTime = this.swapSpeed * 0.3; // Time to grab (slightly longer for smoothness)
+        const moveTime = this.swapSpeed * 0.5; // Time to move (main movement)
+        const releaseTime = this.swapSpeed * 0.2; // Time to release (quicker release)
+
+        // Animate hands
+        if (hand1 && hand2) {
+            // Store initial hand positions (from idle or reset position)
+            let hand1InitialPos = hand1.position.clone();
+            let hand2InitialPos = hand2.position.clone();
+            
+            // Ensure initial positions are also above jar level with minimum buffer
+            const minJarTop = Math.max(jarATopY, jarBTopY);
+            const minHeightAboveJar = 10; // Minimum height above jar top
+            hand1InitialPos.y = Math.max(hand1InitialPos.y, minJarTop + minHeightAboveJar);
+            hand2InitialPos.y = Math.max(hand2InitialPos.y, minJarTop + minHeightAboveJar);
+            
+            // Animate jars moving (synchronized with hands) - smoother easing
+            const tJarA = tween(jarA).to(moveTime, { position: posB }, { easing: 'sineInOut' });
+            const tJarB = tween(jarB).to(moveTime, { position: posA }, { easing: 'sineInOut' });
+
+            // Hand 1 sequence: grab -> move with jar -> release (smoother easing)
+            const tHand1Grab = tween(hand1)
+                .to(grabTime, { position: grabPosA }, { easing: 'sineOut' });
+            
+            const tHand1Move = tween(hand1)
+                .to(moveTime, { position: releasePosA }, { easing: 'sineInOut' });
+            
+            const tHand1Release = tween(hand1)
+                .to(releaseTime, { position: hand1InitialPos }, { easing: 'sineIn' });
+
+            // Hand 2 sequence: grab -> move with jar -> release (smoother easing)
+            const tHand2Grab = tween(hand2)
+                .to(grabTime, { position: grabPosB }, { easing: 'sineOut' });
+            
+            const tHand2Move = tween(hand2)
+                .to(moveTime, { position: releasePosB }, { easing: 'sineInOut' });
+            
+            const tHand2Release = tween(hand2)
+                .to(releaseTime, { position: hand2InitialPos }, { easing: 'sineIn' });
+
+            // Properly sequenced animation
+            tween(this.node)
+                .call(() => {
+                    // Phase 1: Both hands grab simultaneously
+                    tHand1Grab.start();
+                    tHand2Grab.start();
+                })
+                .delay(grabTime)
+                .call(() => {
+                    // Phase 2: Move jars and hands together (synchronized)
+                    tJarA.start();
+                    tJarB.start();
+                    tHand1Move.start();
+                    tHand2Move.start();
+                })
+                .delay(moveTime)
+                .call(() => {
+                    // Phase 3: Both hands release simultaneously
+                    tHand1Release.start();
+                    tHand2Release.start();
+                })
+                .delay(releaseTime + 0.05)
+                .call(() => {
+                    // Swap jar positions in array
+                    this.cups[a] = jarB;
+                    this.cups[b] = jarA;
+
+                    // Update ball tracking
+                    if (this.ballCup === jarA) {
+                        this.ballIndex = b;
+                    } else if (this.ballCup === jarB) {
+                        this.ballIndex = a;
+                    }
+
+                    this.shuffleCups(times - 1, done);
+                })
+                .start();
+        } else {
+            // Fallback: no hands, just move jars (with smooth animation)
+            const tJarA = tween(jarA).to(this.swapSpeed, { position: posB }, { easing: 'sineInOut' });
+            const tJarB = tween(jarB).to(this.swapSpeed, { position: posA }, { easing: 'sineInOut' });
+            
+            tween(this.node)
+                .call(() => {
+                    tJarA.start();
+                    tJarB.start();
+                })
+                .delay(this.swapSpeed + 0.02)
+                .call(() => {
+                    // Swap jar positions in array
+                    this.cups[a] = jarB;
+                    this.cups[b] = jarA;
+
+                    // Update ball tracking
+                    if (this.ballCup === jarA) {
+                        this.ballIndex = b;
+                    } else if (this.ballCup === jarB) {
+                        this.ballIndex = a;
+                    }
+
+                    this.shuffleCups(times - 1, done);
+                })
+                .start();
+        }
+    }
+
+    private resetHands() {
+        // Reset hands to their original positions (store initial positions in onLoad)
+        if (this.hands.length > 0 && (this.hands[0] as any).initialPosition) {
+            for (let i = 0; i < this.hands.length; i++) {
+                if (this.hands[i] && (this.hands[i] as any).initialPosition) {
+                    this.hands[i].setPosition((this.hands[i] as any).initialPosition);
+                }
+            }
+        }
+    }
+
+    private startIdleAnimations() {
+        // Stop any existing idle animations first
+        this.stopIdleAnimations();
+        
+        // Create subtle idle movement for each hand
+        for (let i = 0; i < this.hands.length; i++) {
+            const hand = this.hands[i];
+            if (!hand) continue;
+            
+            // Get initial position (stored in start() or use current position)
+            const initialPos = (hand as any).initialPosition || hand.position.clone();
+            if (!(hand as any).initialPosition) {
+                (hand as any).initialPosition = initialPos.clone();
+            }
+            
+            // Create a subtle floating/bobbing animation
+            // Each hand moves slightly differently for natural variation
+            const offsetX = (i % 2 === 0 ? 1 : -1) * this.idleAnimationAmplitude * 0.5;
+            const offsetY = this.idleAnimationAmplitude;
+            
+            // Create a smooth, continuous idle animation
+            const idleTween = tween(hand)
+                .to(this.idleAnimationSpeed, 
+                    { 
+                        position: new Vec3(
+                            initialPos.x + offsetX, 
+                            initialPos.y + offsetY, 
+                            initialPos.z
+                        ) 
+                    }, 
+                    { easing: 'sineInOut' }
+                )
+                .to(this.idleAnimationSpeed, 
+                    { 
+                        position: new Vec3(
+                            initialPos.x - offsetX, 
+                            initialPos.y - offsetY, 
+                            initialPos.z
+                        ) 
+                    }, 
+                    { easing: 'sineInOut' }
+                )
+                .union()
+                .repeatForever()
+                .start();
+            
+            this.idleTweens.push(idleTween);
+        }
+    }
+
+    private stopIdleAnimations() {
+        // Stop all idle animation tweens
+        for (let i = 0; i < this.idleTweens.length; i++) {
+            if (this.idleTweens[i]) {
+                this.idleTweens[i].stop();
+            }
+        }
+        this.idleTweens = [];
+        
+        // Reset hands to initial positions
+        this.resetHands();
+    }
+}
