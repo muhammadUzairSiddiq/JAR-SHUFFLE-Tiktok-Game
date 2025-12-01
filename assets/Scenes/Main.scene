@@ -1273,7 +1273,7 @@
       "__id__": 28
     },
     "swapsPerRound": 5,
-    "swapSpeed": 0.3,
+    "swapSpeed": 0.75,
     "handGrabOffset": {
       "__type__": "cc.Vec3",
       "x": -5,

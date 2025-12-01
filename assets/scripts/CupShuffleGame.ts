@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, tween, Vec3, Label, Button, math, EventTouch, UITransform, input, Input, Camera, view, Vec2, EventMouse } from 'cc';
+import { _decorator, Component, Node, tween, Vec3, Label, math, EventTouch, UITransform, EventMouse, Sprite, input, Input, Camera, view, Vec2 } from 'cc';
 const { ccclass, property } = _decorator;
 
 @ccclass('CupShuffleGame')
@@ -79,12 +79,12 @@ export class CupShuffleGame extends Component {
             this.resultLabel.string = 'Starting...';
         }
         
-        // Add mouse/touch input at canvas level for web
-        input.on(Input.EventType.MOUSE_DOWN, this.onMouseDown, this);
-        input.on(Input.EventType.TOUCH_START, this.onTouchStart, this);
-        
         // Start idle animations for hands
         this.startIdleAnimations();
+        
+        // Add global input handlers as fallback
+        input.on(Input.EventType.TOUCH_END, this.onGlobalTouch, this);
+        input.on(Input.EventType.MOUSE_UP, this.onGlobalMouse, this);
         
         // Start game after a brief delay
         this.scheduleOnce(() => {
@@ -93,184 +93,189 @@ export class CupShuffleGame extends Component {
         }, 0.5);
     }
     
-    private onMouseDown(event: EventMouse) {
-        if (!this.waitingForInput || this.isShuffling) return;
-        
-        const location = event.getLocation();
-        console.log('Mouse down at:', location.x, location.y);
-        
-        this.checkClickPosition(location);
+    onDestroy() {
+        // Clean up global input handlers
+        input.off(Input.EventType.TOUCH_END, this.onGlobalTouch, this);
+        input.off(Input.EventType.MOUSE_UP, this.onGlobalMouse, this);
     }
     
-    private onTouchStart(event: EventTouch) {
-        if (!this.waitingForInput || this.isShuffling) return;
-        
+    private onGlobalTouch(event: EventTouch) {
         const location = event.getLocation();
-        console.log('Touch start at:', location.x, location.y);
+        console.log(`Global TOUCH_END at: ${location.x}, ${location.y}, waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
         
-        this.checkClickPosition(location);
-    }
-    
-    private checkClickPosition(screenPos: Vec2) {
-        // Get the camera
-        const camera = Camera.main || this.node.scene?.getComponentInChildren(Camera);
-        if (!camera) {
-            console.warn('No camera found');
+        if (!this.waitingForInput || this.isShuffling) {
+            console.log('Global touch ignored - not ready');
             return;
         }
         
-        // Get canvas for UI coordinate conversion
-        const canvas = this.node.scene?.getComponentInChildren('cc.Canvas');
-        const canvasUITransform = canvas?.node?.getComponent(UITransform);
+        this.checkGlobalClick(location);
+    }
+    
+    private onGlobalMouse(event: EventMouse) {
+        const location = event.getLocation();
+        console.log(`Global MOUSE_UP at: ${location.x}, ${location.y}, waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
         
-        // Convert screen to world position using camera
-        const tempVec = new Vec3(screenPos.x, screenPos.y, 0);
+        if (!this.waitingForInput || this.isShuffling) {
+            console.log('Global mouse ignored - not ready');
+            return;
+        }
+        
+        this.checkGlobalClick(location);
+    }
+    
+    private checkGlobalClick(screenPos: Vec2) {
+        const camera = Camera.main || this.node.scene?.getComponentInChildren(Camera);
+        if (!camera) {
+            console.log('No camera found for global click');
+            return;
+        }
+        
+        // Get Canvas node (cups are children of Canvas)
+        const canvasNode = this.node.scene?.getComponentInChildren('cc.Canvas')?.node;
+        if (!canvasNode) {
+            console.log('No Canvas found');
+            return;
+        }
+        
+        // Convert screen to world using camera
+        const screenVec3 = new Vec3(screenPos.x, screenPos.y, -camera.node.worldPosition.z);
         const worldPos = new Vec3();
-        camera.screenToWorld(worldPos, tempVec);
+        camera.screenToWorld(worldPos, screenVec3);
         
-        // Also try converting using viewport
-        const viewport = camera.viewport;
+        // If that doesn't work, try manual conversion with Canvas position
         const screenSize = view.getVisibleSize();
+        if (Math.abs(worldPos.x) < 1 && Math.abs(worldPos.y) < 1) {
+            const orthoHeight = camera.orthoHeight || 320;
+            const aspect = screenSize.width / screenSize.height;
+            const orthoWidth = orthoHeight * aspect;
+            const canvasPos = canvasNode.worldPosition;
+            
+            // Convert screen to Canvas local space
+            const normalizedX = (screenPos.x / screenSize.width - 0.5) * 2;
+            const normalizedY = ((screenSize.height - screenPos.y) / screenSize.height - 0.5) * 2;
+            
+            // World position relative to Canvas
+            worldPos.x = canvasPos.x + normalizedX * (orthoWidth / 2);
+            worldPos.y = canvasPos.y + normalizedY * (orthoHeight / 2);
+            worldPos.z = 0;
+        }
         
-        // For orthographic 2D camera, convert manually
-        const orthoHeight = camera.orthoHeight || 320;
-        const aspect = screenSize.width / screenSize.height;
-        const orthoWidth = orthoHeight * aspect;
+        console.log(`Screen: (${screenPos.x}, ${screenPos.y}) -> World: (${worldPos.x.toFixed(1)}, ${worldPos.y.toFixed(1)})`);
         
-        // Convert screen coordinates (0,0 at bottom-left) to world coordinates
-        // Screen Y is from bottom, but we need to account for camera position
-        const cameraPos = camera.node.worldPosition;
-        const worldX = (screenPos.x / screenSize.width - 0.5) * orthoWidth * 2 + cameraPos.x;
-        const worldY = ((screenSize.height - screenPos.y) / screenSize.height - 0.5) * orthoHeight * 2 + cameraPos.y;
-        
-        const convertedWorldPos = new Vec3(worldX, worldY, 0);
-        
-        console.log('Screen:', screenPos.x.toFixed(1), screenPos.y.toFixed(1), 
-                   'Camera method:', worldPos.x.toFixed(1), worldPos.y.toFixed(1),
-                   'Manual method:', convertedWorldPos.x.toFixed(1), convertedWorldPos.y.toFixed(1));
-        
-        // Use the manually converted position
-        const clickWorldPos = convertedWorldPos;
-        
-        // Check which cup contains this position
-        let closestCup = -1;
-        let closestDistance = Infinity;
-        
+        // Check each cup using world-space bounds
         for (let i = 0; i < this.cups.length; i++) {
             const cup = this.cups[i];
             if (!cup || !cup.active) continue;
             
-            const cupPos = cup.worldPosition;
-            const cupUITransform = cup.getComponent(UITransform);
+            const uiTransform = cup.getComponent(UITransform);
+            if (!uiTransform) continue;
             
-            console.log(`Cup ${i} position:`, cupPos.x.toFixed(1), cupPos.y.toFixed(1));
+            // Get cup's world position and calculate bounds
+            const cupWorldPos = cup.worldPosition;
+            const cupSize = uiTransform.contentSize;
+            const cupScale = cup.worldScale;
+            const anchor = uiTransform.anchorPoint;
             
-            if (cupUITransform) {
-                // Use UITransform bounds
-                const size = cupUITransform.contentSize;
-                const anchor = cupUITransform.anchorPoint;
-                const scale = cup.worldScale;
-                
-                const width = size.width * scale.x;
-                const height = size.height * scale.y;
-                
-                const left = cupPos.x - width * anchor.x;
-                const right = cupPos.x + width * (1 - anchor.x);
-                const bottom = cupPos.y - height * anchor.y;
-                const top = cupPos.y + height * (1 - anchor.y);
-                
-                console.log(`Cup ${i} bounds:`, left.toFixed(1), right.toFixed(1), bottom.toFixed(1), top.toFixed(1));
-                
-                if (clickWorldPos.x >= left && clickWorldPos.x <= right && 
-                    clickWorldPos.y >= bottom && clickWorldPos.y <= top) {
-                    console.log(`✓ Cup ${i} clicked! (bounds check)`);
-                    this.onCupClicked(i, null);
-                    return;
-                }
-            }
+            // Calculate world-space bounds
+            const width = cupSize.width * cupScale.x;
+            const height = cupSize.height * cupScale.y;
+            const left = cupWorldPos.x - width * anchor.x;
+            const right = cupWorldPos.x + width * (1 - anchor.x);
+            const bottom = cupWorldPos.y - height * anchor.y;
+            const top = cupWorldPos.y + height * (1 - anchor.y);
             
-            // Track closest cup
-            const distance = Vec3.distance(clickWorldPos, cupPos);
-            console.log(`Cup ${i} distance:`, distance.toFixed(1));
-            if (distance < closestDistance) {
-                closestDistance = distance;
-                closestCup = i;
+            const inBoundsX = worldPos.x >= left && worldPos.x <= right;
+            const inBoundsY = worldPos.y >= bottom && worldPos.y <= top;
+            
+            console.log(`Cup ${i}: pos(${cupWorldPos.x.toFixed(1)}, ${cupWorldPos.y.toFixed(1)}), bounds(${left.toFixed(1)}, ${right.toFixed(1)}, ${bottom.toFixed(1)}, ${top.toFixed(1)})`);
+            console.log(`  Click(${worldPos.x.toFixed(1)}, ${worldPos.y.toFixed(1)}) in? X:${inBoundsX} Y:${inBoundsY}`);
+            
+            if (inBoundsX && inBoundsY) {
+                console.log(`✓ Click detected on cup ${i}!`);
+                this.onCupClicked(i, null);
+                return;
             }
         }
-        
-        // Fallback: use closest cup if within reasonable distance
-        if (closestCup >= 0 && closestDistance < 150) {
-            console.log(`✓ Cup ${closestCup} clicked! (distance: ${closestDistance.toFixed(1)})`);
-            this.onCupClicked(closestCup, null);
-        } else {
-            console.log('✗ Click not on any cup. Closest:', closestCup, 'Distance:', closestDistance.toFixed(1));
-        }
+        console.log('✗ Click not on any cup');
     }
-    
 
     private setupCupListeners() {
         for (let i = 0; i < this.cups.length; i++) {
             const cup = this.cups[i];
-            if (cup) {
-                // Ensure cup node is active
-                cup.active = true;
-                
-                // Find UITransform - check cup itself first, then children
-                let uiTransform = cup.getComponent(UITransform);
-                let targetNode = cup;
-                
-                if (!uiTransform) {
-                    // Check children for UITransform (sprite might be in child)
-                    const children = cup.children;
-                    for (let j = 0; j < children.length; j++) {
-                        uiTransform = children[j].getComponent(UITransform);
-                        if (uiTransform) {
-                            targetNode = children[j];
-                            break;
-                        }
-                    }
-                }
-                
-                // If still no UITransform, add it to the cup
-                if (!uiTransform) {
-                    console.log(`Adding UITransform to cup ${i}`);
-                    uiTransform = cup.addComponent(UITransform);
-                    if (uiTransform) {
-                        // Set a reasonable size for touch detection
-                        uiTransform.setContentSize(150, 200);
-                    }
-                    targetNode = cup;
-                }
-                
-                // Store cup index for click handler
-                (targetNode as any).cupIndex = i;
-                (cup as any).cupIndex = i;
-                
-                // Remove any existing listeners first
-                targetNode.off(Node.EventType.TOUCH_START);
-                targetNode.off(Node.EventType.TOUCH_END);
-                targetNode.off(Node.EventType.TOUCH_MOVE);
-                
-                // Add touch listeners to the node with UITransform
-                targetNode.on(Node.EventType.TOUCH_START, (event: EventTouch) => {
-                    console.log(`Cup ${i} TOUCH_START detected!`);
-                }, this);
-                
-                targetNode.on(Node.EventType.TOUCH_END, (event: EventTouch) => {
-                    console.log(`Cup ${i} TOUCH_END detected!`);
-                    this.onCupClicked(i, event);
-                }, this);
-                
-                // Also add to parent cup node as backup
-                if (targetNode !== cup) {
-                    cup.on(Node.EventType.TOUCH_END, (event: EventTouch) => {
-                        console.log(`Cup ${i} (parent) TOUCH_END detected!`);
-                        this.onCupClicked(i, event);
-                    }, this);
-                }
-                
-                console.log(`Cup ${i} listener setup complete. UITransform:`, !!uiTransform, 'Target:', targetNode.name);
+            if (!cup) continue;
+            
+            // Ensure cup node is active
+            cup.active = true;
+            
+            // Get or ensure UITransform exists on the cup node
+            let uiTransform = cup.getComponent(UITransform);
+            
+            if (!uiTransform) {
+                uiTransform = cup.addComponent(UITransform);
             }
+            
+            // Try to get proper size from Sprite component
+            if (uiTransform) {
+                const sprite = cup.getComponent(Sprite);
+                if (sprite && sprite.spriteFrame) {
+                    const rect = sprite.spriteFrame.rect;
+                    // Only update if size is significantly different (to avoid overwriting correct sizes)
+                    const currentSize = uiTransform.contentSize;
+                    if (Math.abs(currentSize.width - rect.width) > 10 || 
+                        Math.abs(currentSize.height - rect.height) > 10) {
+                        uiTransform.setContentSize(rect.width, rect.height);
+                        console.log(`Cup ${i}: Updated UITransform size to ${rect.width}x${rect.height}`);
+                    }
+                }
+            }
+            
+            // Store cup index for reference
+            (cup as any).cupIndex = i;
+            
+            // Remove any existing listeners first to prevent duplicates
+            cup.off(Node.EventType.TOUCH_START);
+            cup.off(Node.EventType.TOUCH_END);
+            cup.off(Node.EventType.TOUCH_MOVE);
+            cup.off(Node.EventType.MOUSE_DOWN);
+            cup.off(Node.EventType.MOUSE_UP);
+            
+            // Create click handler
+            const cupIndex = i; // Capture for closure
+            const handleClick = (event: EventTouch | EventMouse) => {
+                console.log(`Cup ${cupIndex} event received! waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
+                
+                // Only process if waiting for input and not shuffling
+                if (!this.waitingForInput || this.isShuffling) {
+                    console.log(`Cup ${cupIndex} click ignored - not ready for input`);
+                    return;
+                }
+                
+                // Stop event propagation to prevent background clicks
+                if (event instanceof EventTouch) {
+                    event.propagationStopped = true;
+                } else if (event instanceof EventMouse) {
+                    event.propagationStopped = true;
+                }
+                
+                console.log(`Cup ${cupIndex} clicked! Processing...`);
+                this.onCupClicked(cupIndex, event instanceof EventTouch ? event : null);
+            };
+            
+            // Add both touch and mouse events
+            cup.on(Node.EventType.TOUCH_END, handleClick, this);
+            cup.on(Node.EventType.MOUSE_UP, handleClick, this);
+            
+            // Also add to children if they exist (sprites might be in children)
+            for (let j = 0; j < cup.children.length; j++) {
+                const child = cup.children[j];
+                child.off(Node.EventType.TOUCH_END);
+                child.off(Node.EventType.MOUSE_UP);
+                child.on(Node.EventType.TOUCH_END, handleClick, this);
+                child.on(Node.EventType.MOUSE_UP, handleClick, this);
+            }
+            
+            const finalSize = uiTransform ? `${uiTransform.contentSize.width}x${uiTransform.contentSize.height}` : 'none';
+            console.log(`Cup ${i} listener setup complete. UITransform size: ${finalSize}, Active: ${cup.active}`);
         }
     }
 
@@ -331,8 +336,12 @@ export class CupShuffleGame extends Component {
     private onCupClicked(cupIndex: number, event: EventTouch | null) {
         console.log(`onCupClicked called! Cup: ${cupIndex}, waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
         
-        if (!this.waitingForInput || this.isShuffling) {
-            console.log('Ignoring click - not waiting for input or still shuffling');
+        if (!this.waitingForInput) {
+            console.log('Ignoring click - not waiting for input');
+            return;
+        }
+        if (this.isShuffling) {
+            console.log('Ignoring click - still shuffling');
             return;
         }
         if (cupIndex < 0 || cupIndex >= this.cups.length) {
