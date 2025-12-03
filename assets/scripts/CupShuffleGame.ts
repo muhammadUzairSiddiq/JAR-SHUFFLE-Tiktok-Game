@@ -418,8 +418,58 @@ export class CupShuffleGame extends Component {
         const liftHeight = 100; // How high to lift the jar
         const liftedCupPos = new Vec3(cupPos.x, cupPos.y + liftHeight, cupPos.z);
         
-        // Get first hand for animation (single hand)
-        const hand = this.hands.length > 0 ? this.hands[0] : null;
+        // Select which hand to use based on jar position
+        let hand: Node | null = null;
+        let handIndex = 0;
+        
+        if (this.hands.length >= 2) {
+            // Get positions of all jars to determine left/right/center
+            const jarPositions: number[] = [];
+            for (let i = 0; i < this.cups.length; i++) {
+                if (this.cups[i]) {
+                    jarPositions.push(this.cups[i].position.x);
+                }
+            }
+            jarPositions.sort((a, b) => a - b); // Sort from left to right
+            
+            // Determine if clicked jar is left, center, or right
+            const clickedJarX = cupPos.x;
+            const isLeftJar = clickedJarX === jarPositions[0];
+            const isRightJar = clickedJarX === jarPositions[jarPositions.length - 1];
+            const isCenterJar = !isLeftJar && !isRightJar;
+            
+            // Get hand positions
+            const leftHand = this.hands[0];
+            const rightHand = this.hands[1];
+            const leftHandX = leftHand ? leftHand.position.x : 0;
+            const rightHandX = rightHand ? rightHand.position.x : 0;
+            
+            if (isCenterJar) {
+                // Randomly choose hand for center jar
+                handIndex = math.randomRangeInt(0, 2);
+                hand = handIndex === 0 ? leftHand : rightHand;
+                console.log(`Center jar clicked - randomly using ${handIndex === 0 ? 'left' : 'right'} hand`);
+            } else {
+                // Calculate distances to both hands
+                const distToLeftHand = Math.abs(clickedJarX - leftHandX);
+                const distToRightHand = Math.abs(clickedJarX - rightHandX);
+                
+                // Use the closer hand
+                if (distToLeftHand < distToRightHand) {
+                    hand = leftHand;
+                    handIndex = 0;
+                    console.log(`Using left hand (closer to jar at x: ${clickedJarX})`);
+                } else {
+                    hand = rightHand;
+                    handIndex = 1;
+                    console.log(`Using right hand (closer to jar at x: ${clickedJarX})`);
+                }
+            }
+        } else if (this.hands.length === 1) {
+            // Fallback: only one hand available
+            hand = this.hands[0];
+            handIndex = 0;
+        }
         
         // Store initial hand position
         const handInitialPos = hand ? (hand as any).initialPosition || hand.position.clone() : null;
