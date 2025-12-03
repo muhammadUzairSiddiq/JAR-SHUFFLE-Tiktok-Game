@@ -375,38 +375,191 @@ export class CupShuffleGame extends Component {
             winningCupIndex = this.ballIndex;
         }
         
-        // Show the ball
-        if (this.ball && this.ballCup) {
-            const cupPos = this.ballCup.position.clone();
-            cupPos.y -= 65;
-            this.ball.setPosition(cupPos);
-            this.ball.active = true;
-        }
-        
         // Check if user clicked the correct cup
         const isCorrect = (clickedIndex === winningCupIndex);
         
-        if (isCorrect) {
-            this.consecutiveWins++;
-            if (this.resultLabel) {
-                this.resultLabel.string = `Correct! Wins: ${this.consecutiveWins}`;
+        // Animate jar lifting and reveal
+        this.liftJarAndReveal(clickedIndex, winningCupIndex, isCorrect);
+    }
+    
+    private liftJarAndReveal(clickedIndex: number, winningCupIndex: number, isCorrect: boolean) {
+        const clickedCup = this.cups[clickedIndex];
+        if (!clickedCup) return;
+        
+        // Stop idle animations
+        this.stopIdleAnimations();
+        
+        // Get cup position and calculate positions
+        const cupPos = clickedCup.position.clone();
+        
+        // Get jar top position for hand placement
+        const getJarTopY = (jar: Node) => {
+            const uiTransform = jar.getComponent(UITransform);
+            if (uiTransform) {
+                const size = uiTransform.contentSize;
+                const anchor = uiTransform.anchorPoint;
+                const scale = jar.worldScale;
+                return jar.position.y + (size.height * (1 - anchor.y) * scale.y);
             }
+            return jar.position.y + 50;
+        };
+        
+        const jarTopY = getJarTopY(clickedCup);
+        const minHeightAboveJar = 10;
+        
+        // Calculate hand position - single hand moves to the clicked jar
+        const handGrabPos = new Vec3(
+            cupPos.x,
+            Math.max(jarTopY + minHeightAboveJar, cupPos.y + this.handGrabOffset.y),
+            cupPos.z
+        );
+        
+        // Calculate lifted jar position (jar moves up)
+        const liftHeight = 100; // How high to lift the jar
+        const liftedCupPos = new Vec3(cupPos.x, cupPos.y + liftHeight, cupPos.z);
+        
+        // Get first hand for animation (single hand)
+        const hand = this.hands.length > 0 ? this.hands[0] : null;
+        
+        // Store initial hand position
+        const handInitialPos = hand ? (hand as any).initialPosition || hand.position.clone() : null;
+        
+        // Animation timing
+        const grabTime = 0.3; // Time for hand to grab
+        const liftTime = 0.4; // Time to lift jar
+        const revealTime = 0.5; // Time to show result
+        const lowerTime = 0.3; // Time to lower jar back
+        
+        // Phase 1: Hand moves to grab the jar
+        if (hand) {
+            const tHandGrab = tween(hand)
+                .to(grabTime, { position: handGrabPos }, { easing: 'sineOut' });
             
-            // Wait a bit then start next round
+            tHandGrab.start();
+            
+            // Phase 2: Lift the jar up (synchronized with hand)
             this.scheduleOnce(() => {
-                this.onStart();
-            }, 1.5);
+                const tCupLift = tween(clickedCup)
+                    .to(liftTime, { position: liftedCupPos }, { easing: 'sineOut' });
+                
+                // Hand follows the jar up
+                const handLiftedPos = new Vec3(
+                    handGrabPos.x,
+                    handGrabPos.y + liftHeight,
+                    handGrabPos.z
+                );
+                const tHandLift = tween(hand)
+                    .to(liftTime, { position: handLiftedPos }, { easing: 'sineOut' });
+                
+                tCupLift.start();
+                tHandLift.start();
+                
+                // Phase 3: Reveal the ball immediately when jar is lifted (or show empty)
+                this.scheduleOnce(() => {
+                    if (isCorrect && this.ball && this.ballCup) {
+                        // Show ball under the lifted jar (positioned down/low)
+                        const ballPos = new Vec3(liftedCupPos.x, liftedCupPos.y - 80, liftedCupPos.z);
+                        this.ball.setPosition(ballPos);
+                        this.ball.active = true;
+                    }
+                    // If wrong, ball stays hidden (jar is empty) - don't show it at all
+                    
+                    // Show result message
+                    if (this.resultLabel) {
+                        if (isCorrect) {
+                            this.consecutiveWins++;
+                            this.resultLabel.string = `Correct! Wins: ${this.consecutiveWins}`;
+                        } else {
+                            this.resultLabel.string = `Wrong! You had ${this.consecutiveWins} wins.`;
+                        }
+                    }
+                    
+                    // Phase 4: Lower jar back down
+                    this.scheduleOnce(() => {
+                        const tCupLower = tween(clickedCup)
+                            .to(lowerTime, { position: cupPos }, { easing: 'sineIn' });
+                        
+                        // Hand returns to initial position
+                        if (hand && handInitialPos) {
+                            const tHandReturn = tween(hand)
+                                .to(lowerTime, { position: handInitialPos }, { easing: 'sineIn' });
+                            tHandReturn.start();
+                        }
+                        
+                        tCupLower.start();
+                        
+                        // After lowering, restart game
+                        this.scheduleOnce(() => {
+                            // Hide ball before restarting (it will be placed under correct cup in next round)
+                            if (this.ball) {
+                                this.ball.active = false;
+                            }
+                            
+                            // Restart game after delay
+                            if (isCorrect) {
+                                this.scheduleOnce(() => {
+                                    this.onStart();
+                                }, 0.5);
+                            } else {
+                                this.consecutiveWins = 0;
+                                this.resetDifficulty();
+                                this.scheduleOnce(() => {
+                                    this.onStart();
+                                }, 1.0);
+                            }
+                        }, lowerTime + 0.2);
+                    }, revealTime);
+                }, liftTime);
+            }, grabTime);
         } else {
-            if (this.resultLabel) {
-                this.resultLabel.string = `Wrong! You had ${this.consecutiveWins} wins. Restarting...`;
-            }
-            this.consecutiveWins = 0;
-            this.resetDifficulty();
+            // Fallback: no hand, just lift jar
+            const tCupLift = tween(clickedCup)
+                .to(liftTime, { position: liftedCupPos }, { easing: 'sineOut' });
+            tCupLift.start();
             
-            // Auto-restart after 2 seconds
             this.scheduleOnce(() => {
-                this.onStart();
-            }, 2);
+                // Reveal ball immediately when lifted (if correct)
+                if (isCorrect && this.ball && this.ballCup) {
+                    const ballPos = new Vec3(liftedCupPos.x, liftedCupPos.y - 80, liftedCupPos.z);
+                    this.ball.setPosition(ballPos);
+                    this.ball.active = true;
+                }
+                // If wrong, ball stays hidden
+                
+                if (this.resultLabel) {
+                    if (isCorrect) {
+                        this.consecutiveWins++;
+                        this.resultLabel.string = `Correct! Wins: ${this.consecutiveWins}`;
+                    } else {
+                        this.resultLabel.string = `Wrong! You had ${this.consecutiveWins} wins.`;
+                    }
+                }
+                
+                this.scheduleOnce(() => {
+                    const tCupLower = tween(clickedCup)
+                        .to(lowerTime, { position: cupPos }, { easing: 'sineIn' });
+                    tCupLower.start();
+                    
+                    this.scheduleOnce(() => {
+                        // Hide ball before restarting
+                        if (this.ball) {
+                            this.ball.active = false;
+                        }
+                        
+                        if (isCorrect) {
+                            this.scheduleOnce(() => {
+                                this.onStart();
+                            }, 0.5);
+                        } else {
+                            this.consecutiveWins = 0;
+                            this.resetDifficulty();
+                            this.scheduleOnce(() => {
+                                this.onStart();
+                            }, 1.0);
+                        }
+                    }, lowerTime + 0.2);
+                }, revealTime);
+            }, liftTime);
         }
     }
 
