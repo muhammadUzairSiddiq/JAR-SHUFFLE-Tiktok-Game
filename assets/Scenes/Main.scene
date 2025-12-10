@@ -1282,6 +1282,14 @@
     },
     "idleAnimationAmplitude": 6,
     "idleAnimationSpeed": 1,
+    "ballRevealDuration": 0.5,
+    "highlightColor": {
+      "__type__": "cc.Color",
+      "r": 198,
+      "g": 93,
+      "b": 224,
+      "a": 238
+    },
     "_id": "2dthQXlMVJ1K7PyBUm1WMp"
   },
   {

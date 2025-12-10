@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, tween, Vec3, Label, math, EventTouch, UITransform, EventMouse, Sprite, input, Input, Camera, view, Vec2 } from 'cc';
+import { _decorator, Component, Node, tween, Vec3, Label, math, EventTouch, UITransform, EventMouse, Sprite, input, Input, Camera, view, Vec2, Color } from 'cc';
 const { ccclass, property } = _decorator;
 
 @ccclass('CupShuffleGame')
@@ -31,6 +31,12 @@ export class CupShuffleGame extends Component {
     @property
     idleAnimationSpeed: number = 1.5; // Speed of idle animation
 
+    @property
+    ballRevealDuration: number = 0.6; // How long the ball stays visible after reveal
+
+    @property(Color)
+    highlightColor: Color = new Color(255, 105, 180, 160); // Tint for clicked jar
+
     private ballIndex: number = 1;
     private ballCup: Node | null = null; // Track which cup node has the ball
     private isShuffling = false;
@@ -39,6 +45,8 @@ export class CupShuffleGame extends Component {
     private baseSwapsPerRound = 10;
     private baseSwapSpeed = 0.35;
     private idleTweens: any[] = []; // Store idle animation tweens
+    private demoShown = false;
+    private highlightedCup: Node | null = null;
 
     onLoad() {
         // Start button removed - game auto-starts
@@ -55,7 +63,10 @@ export class CupShuffleGame extends Component {
         // Setup cup click listeners
         this.setupCupListeners();
         
-        // Hide ball initially
+        // Ensure result label starts empty and ball hidden
+        if (this.resultLabel) {
+            this.resultLabel.string = '';
+        }
         if (this.ball) {
             this.ball.active = false;
         }
@@ -75,10 +86,6 @@ export class CupShuffleGame extends Component {
         }
         
         // Auto-start immediately
-        if (this.resultLabel) {
-            this.resultLabel.string = 'Starting...';
-        }
-        
         // Start idle animations for hands
         this.startIdleAnimations();
         
@@ -89,7 +96,7 @@ export class CupShuffleGame extends Component {
         // Start game after a brief delay
         this.scheduleOnce(() => {
             console.log('Auto-starting game...');
-            this.onStart();
+            this.onStart(true); // first round acts as demo
         }, 0.5);
     }
     
@@ -279,7 +286,7 @@ export class CupShuffleGame extends Component {
         }
     }
 
-    onStart() {
+    onStart(isDemoRound: boolean = false) {
         console.log('onStart called!', 'isShuffling:', this.isShuffling, 'waitingForInput:', this.waitingForInput, 'cups:', this.cups.length);
         
         if (this.isShuffling || this.waitingForInput) {
@@ -302,12 +309,11 @@ export class CupShuffleGame extends Component {
         this.isShuffling = true;
         this.waitingForInput = false;
         if (this.resultLabel) {
-            this.resultLabel.string = 'Shuffling...';
+            this.resultLabel.string = '';
         }
-
-        // Hide ball during shuffle
+        this.clearHighlights();
         if (this.ball) {
-            this.ball.active = false;
+            this.ball.active = false; // stay hidden during shuffle
         }
 
         // Random starting cup for ball
@@ -318,18 +324,35 @@ export class CupShuffleGame extends Component {
         // Calculate difficulty based on consecutive wins
         this.updateDifficulty();
 
+        // Immediately shuffle
         this.shuffleCups(this.swapsPerRound, () => {
             this.isShuffling = false;
-            this.waitingForInput = true;
             
             // Resume idle animations after shuffle
             this.startIdleAnimations();
             
+            if (isDemoRound && !this.demoShown) {
+                this.demoShown = true;
+                this.waitingForInput = false;
+                const winningIndex = this.ballIndex;
+                // Auto-reveal using the same animation path as a user click, then start a real round
+                this.liftJarAndReveal(
+                    winningIndex,
+                    winningIndex,
+                    true,
+                    () => { this.onStart(false); },
+                    false,
+                    false
+                );
+                return;
+            }
+
+            this.waitingForInput = true;
+            
             if (this.resultLabel) {
-                this.resultLabel.string = 'Click a cup!';
+                this.resultLabel.string = '';
             }
             console.log('Shuffling complete! Waiting for cup click. Ball is under cup index:', this.ballIndex);
-            // Ball stays hidden until user clicks
         });
     }
 
@@ -351,6 +374,7 @@ export class CupShuffleGame extends Component {
         
         // Disable all cups temporarily to prevent double clicks
         this.waitingForInput = false;
+        this.highlightCup(this.cups[cupIndex]);
         
         console.log(`Processing click on cup ${cupIndex}`);
         this.checkAnswer(cupIndex);
@@ -382,7 +406,14 @@ export class CupShuffleGame extends Component {
         this.liftJarAndReveal(clickedIndex, winningCupIndex, isCorrect);
     }
     
-    private liftJarAndReveal(clickedIndex: number, winningCupIndex: number, isCorrect: boolean) {
+    private liftJarAndReveal(
+        clickedIndex: number,
+        winningCupIndex: number,
+        isCorrect: boolean,
+        onComplete?: () => void,
+        shouldRestartOnComplete: boolean = true,
+        revealCorrectOnMiss: boolean = true
+    ) {
         const clickedCup = this.cups[clickedIndex];
         if (!clickedCup) return;
         
@@ -511,17 +542,18 @@ export class CupShuffleGame extends Component {
                         const ballPos = new Vec3(liftedCupPos.x, -90, liftedCupPos.z);
                         this.ball.setPosition(ballPos);
                         this.ball.active = true;
+                        // Auto-hide after configured duration
+                        this.scheduleOnce(() => {
+                            if (this.ball) {
+                                this.ball.active = false;
+                            }
+                        }, this.ballRevealDuration);
                     }
                     // If wrong, ball stays hidden (jar is empty) - don't show it at all
                     
-                    // Show result message
-                    if (this.resultLabel) {
-                        if (isCorrect) {
-                            this.consecutiveWins++;
-                            this.resultLabel.string = `Correct! Wins: ${this.consecutiveWins}`;
-                        } else {
-                            this.resultLabel.string = `Wrong! You had ${this.consecutiveWins} wins.`;
-                        }
+                    // Track streak internally only; no on-screen text
+                    if (isCorrect) {
+                        this.consecutiveWins++;
                     }
                     
                     // Phase 4: Lower jar back down with wobble effect
@@ -575,25 +607,54 @@ export class CupShuffleGame extends Component {
                             
                             performWobble();
                             
-                            // After wobble completes, restart game
+                            // After wobble completes, finish round
                             this.scheduleOnce(() => {
-                                // Hide ball before restarting (it will be placed under correct cup in next round)
+                                // Keep ball visible under the correct jar when guessed right
+                                if (isCorrect && this.ball) {
+                                    this.placeBallUnderCup(clickedIndex);
+                                    this.ball.active = true;
+                                }
+
+                                // If wrong and we need to reveal the correct jar, do that using the same animation path
+                                if (!isCorrect && revealCorrectOnMiss) {
+                                    this.liftJarAndReveal(
+                                        winningCupIndex,
+                                        winningCupIndex,
+                                        true,
+                                        onComplete,
+                                        shouldRestartOnComplete,
+                                        false
+                                    );
+                                    return;
+                                }
+
+                                // Hide ball before restarting to avoid overlap under lowered jars
                                 if (this.ball) {
                                     this.ball.active = false;
                                 }
-                                
-                                // Restart game after delay
-                                if (isCorrect) {
-                                    this.scheduleOnce(() => {
-                                        this.onStart();
-                                    }, 0.5);
-                                } else {
-                                    this.consecutiveWins = 0;
-                                    this.resetDifficulty();
-                                    this.scheduleOnce(() => {
-                                        this.onStart();
-                                    }, 1.0);
-                                }
+
+        const finish = () => {
+                                    if (onComplete) {
+                                        onComplete();
+                                        return;
+                                    }
+                                    if (!shouldRestartOnComplete) {
+                                        return;
+                                    }
+                                    if (isCorrect) {
+                                        this.scheduleOnce(() => {
+                                            this.onStart(false);
+                                        }, 0.5);
+                                    } else {
+                                        this.consecutiveWins = 0;
+                                        this.resetDifficulty();
+                                        this.scheduleOnce(() => {
+                                            this.onStart(false);
+                                        }, 1.0);
+                                    }
+                                };
+
+                                finish();
                             }, wobbleDuration * wobbleCount + 0.1);
                         }, lowerTime);
                     }, revealTime);
@@ -611,16 +672,17 @@ export class CupShuffleGame extends Component {
                     const ballPos = new Vec3(liftedCupPos.x, -90, liftedCupPos.z);
                     this.ball.setPosition(ballPos);
                     this.ball.active = true;
+                    // Auto-hide after configured duration
+                    this.scheduleOnce(() => {
+                        if (this.ball) {
+                            this.ball.active = false;
+                        }
+                    }, this.ballRevealDuration);
                 }
                 // If wrong, ball stays hidden
                 
-                if (this.resultLabel) {
-                    if (isCorrect) {
-                        this.consecutiveWins++;
-                        this.resultLabel.string = `Correct! Wins: ${this.consecutiveWins}`;
-                    } else {
-                        this.resultLabel.string = `Wrong! You had ${this.consecutiveWins} wins.`;
-                    }
+                if (isCorrect) {
+                    this.consecutiveWins++;
                 }
                 
                 this.scheduleOnce(() => {
@@ -662,22 +724,50 @@ export class CupShuffleGame extends Component {
                         performWobble();
                         
                         this.scheduleOnce(() => {
-                            // Hide ball before restarting
+                            if (isCorrect && this.ball) {
+                                this.placeBallUnderCup(clickedIndex);
+                                this.ball.active = true;
+                            }
+
+                            if (!isCorrect && revealCorrectOnMiss) {
+                                this.liftJarAndReveal(
+                                    winningCupIndex,
+                                    winningCupIndex,
+                                    true,
+                                    onComplete,
+                                    shouldRestartOnComplete,
+                                    false
+                                );
+                                return;
+                            }
+                            
+                            // Hide ball before restarting to avoid overlap under lowered jars
                             if (this.ball) {
                                 this.ball.active = false;
                             }
                             
-                            if (isCorrect) {
-                                this.scheduleOnce(() => {
-                                    this.onStart();
-                                }, 0.5);
-                            } else {
-                                this.consecutiveWins = 0;
-                                this.resetDifficulty();
-                                this.scheduleOnce(() => {
-                                    this.onStart();
-                                }, 1.0);
-                            }
+                            const finish = () => {
+                                if (onComplete) {
+                                    onComplete();
+                                    return;
+                                }
+                                if (!shouldRestartOnComplete) {
+                                    return;
+                                }
+                                if (isCorrect) {
+                                    this.scheduleOnce(() => {
+                                        this.onStart(false);
+                                    }, 0.5);
+                                } else {
+                                    this.consecutiveWins = 0;
+                                    this.resetDifficulty();
+                                    this.scheduleOnce(() => {
+                                        this.onStart(false);
+                                    }, 1.0);
+                                }
+                            };
+
+                            finish();
                         }, wobbleDuration * wobbleCount + 0.1);
                     }, lowerTime);
                 }, revealTime);
@@ -878,6 +968,27 @@ export class CupShuffleGame extends Component {
                     this.hands[i].setPosition((this.hands[i] as any).initialPosition);
                 }
             }
+        }
+    }
+
+    private highlightCup(cup: Node | null) {
+        this.clearHighlights();
+        if (!cup) return;
+        const sprite = cup.getComponent(Sprite);
+        if (sprite) {
+            // Subtle tint controlled from the editor
+            sprite.color = this.highlightColor;
+            this.highlightedCup = cup;
+        }
+    }
+
+    private clearHighlights() {
+        if (this.highlightedCup) {
+            const sprite = this.highlightedCup.getComponent(Sprite);
+            if (sprite) {
+                sprite.color = Color.WHITE;
+            }
+            this.highlightedCup = null;
         }
     }
 
