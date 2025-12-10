@@ -13,8 +13,20 @@ export class CupShuffleGame extends Component {
     @property(Node)
     ball: Node = null!;
 
+    @property(Node)
+    ball2: Node = null!; // Second ball for double balls feature
+
     @property(Label)
     resultLabel: Label = null!;
+
+    @property(Label)
+    coinLabel: Label = null!; // Label to display current coin reward
+
+    @property
+    enableDoubleBalls: boolean = false; // Enable/disable double balls feature
+
+    @property
+    startingCoins: number = 2; // Starting coin reward (doubles on each win) - not used, always starts at 2
 
     @property
     swapsPerRound: number = 10;
@@ -84,9 +96,12 @@ export class CupShuffleGame extends Component {
 
     private ballIndex: number = 1;
     private ballCup: Node | null = null; // Track which cup node has the ball
+    private ball2Index: number = -1; // Track second ball index (-1 if not used)
+    private ball2Cup: Node | null = null; // Track which cup node has the second ball
     private isShuffling = false;
     private waitingForInput = false;
     private consecutiveWins = 0;
+    private currentCoins: number = 0; // Current coin reward (starts at 0, becomes 2 on first win, then doubles)
     private baseSwapsPerRound = 10;
     private baseSwapSpeed = 0.35;
     private idleTweens: any[] = []; // Store idle animation tweens
@@ -120,7 +135,14 @@ export class CupShuffleGame extends Component {
         if (this.ball) {
             this.ball.active = false;
         }
+        if (this.ball2) {
+            this.ball2.active = false;
+        }
         this.setLiftExtrasActive(false);
+        
+        // Initialize coins to 0 (will become 2 on first correct answer)
+        this.currentCoins = 0;
+        this.updateCoinDisplay();
         
         // Save initial values from editor - these are the defaults that will be restored on wrong answer
         this.baseSwapsPerRound = this.swapsPerRound;
@@ -538,11 +560,29 @@ export class CupShuffleGame extends Component {
         if (this.ball) {
             this.ball.active = false; // stay hidden during shuffle
         }
+        if (this.ball2) {
+            this.ball2.active = false; // stay hidden during shuffle
+        }
 
-        // Random starting cup for ball
+        // Random starting cup for ball(s)
         this.ballIndex = math.randomRangeInt(0, this.cups.length);
         this.ballCup = this.cups[this.ballIndex];
         this.placeBallUnderCup(this.ballIndex);
+        
+        // Place second ball if double balls enabled
+        if (this.enableDoubleBalls && this.ball2) {
+            // Place second ball in a different cup
+            let ball2Index = math.randomRangeInt(0, this.cups.length);
+            while (ball2Index === this.ballIndex && this.cups.length > 1) {
+                ball2Index = math.randomRangeInt(0, this.cups.length);
+            }
+            this.ball2Index = ball2Index;
+            this.ball2Cup = this.cups[this.ball2Index];
+            this.placeBall2UnderCup(this.ball2Index);
+        } else {
+            this.ball2Index = -1;
+            this.ball2Cup = null;
+        }
 
         // Calculate difficulty based on consecutive wins
         this.updateDifficulty();
@@ -576,6 +616,10 @@ export class CupShuffleGame extends Component {
             if (this.resultLabel) {
                 this.resultLabel.string = '';
             }
+            
+            // Update coin display when waiting for input
+            this.updateCoinDisplay();
+            
             console.log('Shuffling complete! Waiting for cup click. Ball is under cup index:', this.ballIndex);
         });
     }
@@ -607,33 +651,57 @@ export class CupShuffleGame extends Component {
     private checkAnswer(clickedIndex: number) {
         this.waitingForInput = false;
         
-        // Find which cup node has the ball (the winning cup)
-        let winningCupIndex = -1;
+        // Find which cup node(s) have the ball(s)
+        let winningCupIndex1 = -1;
+        let winningCupIndex2 = -1;
+        
         if (this.ballCup) {
             for (let i = 0; i < this.cups.length; i++) {
                 if (this.cups[i] === this.ballCup) {
-                    winningCupIndex = i;
+                    winningCupIndex1 = i;
                     break;
                 }
             }
         }
         
         // Fallback to ballIndex if ballCup not found
-        if (winningCupIndex === -1) {
-            winningCupIndex = this.ballIndex;
+        if (winningCupIndex1 === -1) {
+            winningCupIndex1 = this.ballIndex;
         }
         
-        // Check if user clicked the correct cup
-        const isCorrect = (clickedIndex === winningCupIndex);
+        // Find second ball position if double balls enabled
+        if (this.enableDoubleBalls && this.ball2Cup) {
+            for (let i = 0; i < this.cups.length; i++) {
+                if (this.cups[i] === this.ball2Cup) {
+                    winningCupIndex2 = i;
+                    break;
+                }
+            }
+            if (winningCupIndex2 === -1) {
+                winningCupIndex2 = this.ball2Index;
+            }
+        }
         
-        // Immediately reset speed to initial if wrong answer
+        // Check if user clicked a cup with a ball
+        // If double balls enabled, win if clicked cup has either ball
+        // Otherwise, win only if clicked cup has the first ball
+        const isCorrect = this.enableDoubleBalls 
+            ? (clickedIndex === winningCupIndex1 || clickedIndex === winningCupIndex2)
+            : (clickedIndex === winningCupIndex1);
+        
+        // Determine which winning cup to use for reveal (use first ball's position)
+        const winningCupIndex = winningCupIndex1;
+        
+        // Immediately reset speed and coins to 0 if wrong answer
         if (!isCorrect) {
             this.consecutiveWins = 0;
             this.resetDifficulty();
+            this.currentCoins = 0; // Reset coins to 0 immediately on wrong answer
+            this.updateCoinDisplay();
         }
         
-        // Animate jar lifting and reveal
-        this.liftJarAndReveal(clickedIndex, winningCupIndex, isCorrect);
+        // Animate jar lifting and reveal (true = this is a user click, so update coins)
+        this.liftJarAndReveal(clickedIndex, winningCupIndex, isCorrect, undefined, true, true, true);
     }
     
     private liftJarAndReveal(
@@ -642,7 +710,8 @@ export class CupShuffleGame extends Component {
         isCorrect: boolean,
         onComplete?: () => void,
         shouldRestartOnComplete: boolean = true,
-        revealCorrectOnMiss: boolean = true
+        revealCorrectOnMiss: boolean = true,
+        isUserClick: boolean = false // Only update coins if this is a user click
     ) {
         const clickedCup = this.cups[clickedIndex];
         if (!clickedCup) return;
@@ -770,24 +839,49 @@ export class CupShuffleGame extends Component {
                 tCupLift.start();
                 tHandLift.start();
                 
-                // Phase 3: Reveal the ball immediately when jar is lifted (or show empty)
+                // Phase 3: Reveal the ball(s) immediately when jar is lifted (or show empty)
                 this.scheduleOnce(() => {
-                    if (isCorrect && this.ball && this.ballCup) {
-                        // Show ball with fixed Y position
-                        const ballPos = new Vec3(liftedCupPos.x, this.ballYPosition, liftedCupPos.z);
-                        this.ball.setPosition(ballPos);
-                        this.ball.active = true;
-                        // Auto-hide after configured duration
-                        this.scheduleOnce(() => {
-                            if (this.ball) {
-                                this.ball.active = false;
-                            }
-                        }, this.ballRevealDuration);
+                    if (isCorrect) {
+                        // Show first ball if it's in the clicked cup
+                        if (this.ball && this.ballCup && clickedCup === this.ballCup) {
+                            const ballPos = new Vec3(liftedCupPos.x, this.ballYPosition, liftedCupPos.z);
+                            this.ball.setPosition(ballPos);
+                            this.ball.active = true;
+                            // Auto-hide after configured duration
+                            this.scheduleOnce(() => {
+                                if (this.ball) {
+                                    this.ball.active = false;
+                                }
+                            }, this.ballRevealDuration);
+                        }
+                        
+                        // Show second ball if double balls enabled and it's in the clicked cup
+                        if (this.enableDoubleBalls && this.ball2 && this.ball2Cup && clickedCup === this.ball2Cup) {
+                            const ball2Pos = new Vec3(liftedCupPos.x, this.ballYPosition - 20, liftedCupPos.z); // Slightly offset Y to show both
+                            this.ball2.setPosition(ball2Pos);
+                            this.ball2.active = true;
+                            // Auto-hide after configured duration
+                            this.scheduleOnce(() => {
+                                if (this.ball2) {
+                                    this.ball2.active = false;
+                                }
+                            }, this.ballRevealDuration);
+                        }
                     }
                     // If wrong, ball stays hidden (jar is empty) - don't show it at all
                     
-                    // Track streak internally only; no on-screen text
-                    if (isCorrect) {
+                    // Track streak and update coins (only on user clicks, not demo rounds)
+                    if (isCorrect && isUserClick) {
+                        this.consecutiveWins++;
+                        // First win = 2, then double each time
+                        if (this.currentCoins === 0) {
+                            this.currentCoins = 2;
+                        } else {
+                            this.currentCoins *= 2; // Double coins on each subsequent win
+                        }
+                        this.updateCoinDisplay();
+                    } else if (isCorrect) {
+                        // Still track wins for difficulty, but don't update coins if not user click
                         this.consecutiveWins++;
                     }
                     
@@ -844,10 +938,18 @@ export class CupShuffleGame extends Component {
                             
                             // After wobble completes, finish round
                             this.scheduleOnce(() => {
-                                // Keep ball visible under the correct jar when guessed right
-                                if (isCorrect && this.ball) {
-                                    this.placeBallUnderCup(clickedIndex);
-                                    this.ball.active = true;
+                                // Keep ball(s) visible under the correct jar when guessed right
+                                if (isCorrect) {
+                                    // Show first ball if it's in the clicked cup
+                                    if (this.ball && this.ballCup && clickedCup === this.ballCup) {
+                                        this.placeBallUnderCup(clickedIndex);
+                                        this.ball.active = true;
+                                    }
+                                    // Show second ball if double balls enabled and it's in the clicked cup
+                                    if (this.enableDoubleBalls && this.ball2 && this.ball2Cup && clickedCup === this.ball2Cup) {
+                                        this.placeBall2UnderCup(clickedIndex);
+                                        this.ball2.active = true;
+                                    }
                                 }
 
                                 // If wrong and we need to reveal the correct jar, do that using the same animation path
@@ -903,23 +1005,51 @@ export class CupShuffleGame extends Component {
             tCupLift.start();
             
             this.scheduleOnce(() => {
-                // Reveal ball immediately when lifted (if correct)
-                if (isCorrect && this.ball && this.ballCup) {
-                    const ballPos = new Vec3(liftedCupPos.x, this.ballYPosition, liftedCupPos.z);
-                    this.ball.setPosition(ballPos);
-                    this.ball.active = true;
-                    // Auto-hide after configured duration
-                    this.scheduleOnce(() => {
-                        if (this.ball) {
-                            this.ball.active = false;
-                        }
-                    }, this.ballRevealDuration);
+                // Reveal ball(s) immediately when lifted (if correct)
+                if (isCorrect) {
+                    // Show first ball if it's in the clicked cup
+                    if (this.ball && this.ballCup && clickedCup === this.ballCup) {
+                        const ballPos = new Vec3(liftedCupPos.x, this.ballYPosition, liftedCupPos.z);
+                        this.ball.setPosition(ballPos);
+                        this.ball.active = true;
+                        // Auto-hide after configured duration
+                        this.scheduleOnce(() => {
+                            if (this.ball) {
+                                this.ball.active = false;
+                            }
+                        }, this.ballRevealDuration);
+                    }
+                    
+                    // Show second ball if double balls enabled and it's in the clicked cup
+                    if (this.enableDoubleBalls && this.ball2 && this.ball2Cup && clickedCup === this.ball2Cup) {
+                        const ball2Pos = new Vec3(liftedCupPos.x, this.ballYPosition - 20, liftedCupPos.z); // Slightly offset Y
+                        this.ball2.setPosition(ball2Pos);
+                        this.ball2.active = true;
+                        // Auto-hide after configured duration
+                        this.scheduleOnce(() => {
+                            if (this.ball2) {
+                                this.ball2.active = false;
+                            }
+                        }, this.ballRevealDuration);
+                    }
                 }
                 // If wrong, ball stays hidden
                 
-                if (isCorrect) {
+                // Track streak and update coins (only on user clicks, not demo rounds)
+                if (isCorrect && isUserClick) {
+                    this.consecutiveWins++;
+                    // First win = 2, then double each time
+                    if (this.currentCoins === 0) {
+                        this.currentCoins = 2;
+                    } else {
+                        this.currentCoins *= 2; // Double coins on each subsequent win
+                    }
+                    this.updateCoinDisplay();
+                } else if (isCorrect) {
+                    // Still track wins for difficulty, but don't update coins if not user click
                     this.consecutiveWins++;
                 }
+                // Wrong answer coins reset was already handled immediately in checkAnswer() (only for user clicks)
                 
                 this.scheduleOnce(() => {
                     const tCupLower = tween(clickedCup)
@@ -960,9 +1090,18 @@ export class CupShuffleGame extends Component {
                         performWobble();
                         
                         this.scheduleOnce(() => {
-                            if (isCorrect && this.ball) {
-                                this.placeBallUnderCup(clickedIndex);
-                                this.ball.active = true;
+                            // Keep ball(s) visible under the correct jar when guessed right
+                            if (isCorrect) {
+                                // Show first ball if it's in the clicked cup
+                                if (this.ball && this.ballCup && clickedCup === this.ballCup) {
+                                    this.placeBallUnderCup(clickedIndex);
+                                    this.ball.active = true;
+                                }
+                                // Show second ball if double balls enabled and it's in the clicked cup
+                                if (this.enableDoubleBalls && this.ball2 && this.ball2Cup && clickedCup === this.ball2Cup) {
+                                    this.placeBall2UnderCup(clickedIndex);
+                                    this.ball2.active = true;
+                                }
                             }
 
                             if (!isCorrect && revealCorrectOnMiss) {
@@ -1042,6 +1181,27 @@ export class CupShuffleGame extends Component {
         const cupPos = this.cups[index].position.clone();
         cupPos.y = this.ballYPosition;        // Fixed Y position (editable in inspector)
         this.ball.setPosition(cupPos);
+    }
+
+    private placeBall2UnderCup(index: number) {
+        if (!this.ball2 || !this.cups[index]) return;
+        const cupPos = this.cups[index].position.clone();
+        cupPos.y = this.ballYPosition;        // Fixed Y position (editable in inspector)
+        this.ball2.setPosition(cupPos);
+    }
+
+    private updateCoinDisplay() {
+        if (this.coinLabel) {
+            // Ensure label is active and visible
+            if (this.coinLabel.node) {
+                this.coinLabel.node.active = true;
+            }
+            // Show only the number, no "Coins" text
+            this.coinLabel.string = `${this.currentCoins}`;
+            console.log(`Coins updated: ${this.currentCoins}`);
+        } else {
+            console.warn('Coin Label not assigned! Please assign a Label component in the inspector.');
+        }
     }
 
 
@@ -1168,6 +1328,15 @@ export class CupShuffleGame extends Component {
                     } else if (this.ballCup === jarB) {
                         this.ballIndex = a;
                     }
+                    
+                    // Update ball2 tracking if double balls enabled
+                    if (this.enableDoubleBalls && this.ball2Cup) {
+                        if (this.ball2Cup === jarA) {
+                            this.ball2Index = b;
+                        } else if (this.ball2Cup === jarB) {
+                            this.ball2Index = a;
+                        }
+                    }
 
                     this.shuffleCups(times - 1, done);
                 })
@@ -1193,6 +1362,15 @@ export class CupShuffleGame extends Component {
                         this.ballIndex = b;
                     } else if (this.ballCup === jarB) {
                         this.ballIndex = a;
+                    }
+                    
+                    // Update ball2 tracking if double balls enabled
+                    if (this.enableDoubleBalls && this.ball2Cup) {
+                        if (this.ball2Cup === jarA) {
+                            this.ball2Index = b;
+                        } else if (this.ball2Cup === jarB) {
+                            this.ball2Index = a;
+                        }
                     }
 
                     this.shuffleCups(times - 1, done);
