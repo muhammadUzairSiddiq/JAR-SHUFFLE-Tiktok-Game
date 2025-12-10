@@ -32,6 +32,15 @@ export class CupShuffleGame extends Component {
     idleAnimationSpeed: number = 1.5; // Speed of idle animation
 
     @property
+    jarLiftHeight: number = 80; // How high the jar is lifted during reveal
+
+    @property
+    jarTiltAngle: number = 15; // Z-axis tilt (degrees) during lift
+
+    @property([Node])
+    liftExtras: Node[] = []; // Nodes that should only be active during lift/reveal
+
+    @property
     ballRevealDuration: number = 0.6; // How long the ball stays visible after reveal
 
     @property(Color)
@@ -70,6 +79,7 @@ export class CupShuffleGame extends Component {
         if (this.ball) {
             this.ball.active = false;
         }
+        this.setLiftExtrasActive(false);
         
         this.baseSwapsPerRound = this.swapsPerRound;
         this.baseSwapSpeed = this.swapSpeed;
@@ -312,6 +322,7 @@ export class CupShuffleGame extends Component {
             this.resultLabel.string = '';
         }
         this.clearHighlights();
+        this.setLiftExtrasActive(false);
         if (this.ball) {
             this.ball.active = false; // stay hidden during shuffle
         }
@@ -419,6 +430,7 @@ export class CupShuffleGame extends Component {
         
         // Stop idle animations
         this.stopIdleAnimations();
+        this.setLiftExtrasActive(true);
         
         // Get cup position and calculate positions
         const cupPos = clickedCup.position.clone();
@@ -446,8 +458,12 @@ export class CupShuffleGame extends Component {
         );
         
         // Calculate lifted jar position (jar moves up)
-        const liftHeight = 100; // How high to lift the jar
+        const liftHeight = this.jarLiftHeight;
         const liftedCupPos = new Vec3(cupPos.x, cupPos.y + liftHeight, cupPos.z);
+
+        // Capture initial rotation for restore and compute tilt target
+        const initialEuler = clickedCup.eulerAngles.clone();
+        const tiltedEuler = new Vec3(initialEuler.x, initialEuler.y, initialEuler.z + this.jarTiltAngle);
         
         // Select which hand to use based on jar position
         let hand: Node | null = null;
@@ -521,7 +537,7 @@ export class CupShuffleGame extends Component {
             // Phase 2: Lift the jar up (synchronized with hand, smoother)
             this.scheduleOnce(() => {
                 const tCupLift = tween(clickedCup)
-                    .to(liftTime, { position: liftedCupPos }, { easing: 'cubicOut' });
+                    .to(liftTime, { position: liftedCupPos, eulerAngles: tiltedEuler }, { easing: 'cubicOut' });
                 
                 // Hand follows the jar up (smoother)
                 const handLiftedPos = new Vec3(
@@ -560,7 +576,7 @@ export class CupShuffleGame extends Component {
                     this.scheduleOnce(() => {
                         // Lower jar smoothly
                         const tCupLower = tween(clickedCup)
-                            .to(lowerTime, { position: cupPos }, { easing: 'cubicIn' });
+                            .to(lowerTime, { position: cupPos, eulerAngles: initialEuler }, { easing: 'cubicIn' });
                         
                         // Hand returns to initial position (smoother)
                         if (hand && handInitialPos) {
@@ -632,6 +648,7 @@ export class CupShuffleGame extends Component {
                                 if (this.ball) {
                                     this.ball.active = false;
                                 }
+                                this.setLiftExtrasActive(false);
 
         const finish = () => {
                                     if (onComplete) {
@@ -663,7 +680,7 @@ export class CupShuffleGame extends Component {
         } else {
             // Fallback: no hand, just lift jar (with smoother animations)
             const tCupLift = tween(clickedCup)
-                .to(liftTime, { position: liftedCupPos }, { easing: 'cubicOut' });
+                .to(liftTime, { position: liftedCupPos, eulerAngles: tiltedEuler }, { easing: 'cubicOut' });
             tCupLift.start();
             
             this.scheduleOnce(() => {
@@ -687,7 +704,7 @@ export class CupShuffleGame extends Component {
                 
                 this.scheduleOnce(() => {
                     const tCupLower = tween(clickedCup)
-                        .to(lowerTime, { position: cupPos }, { easing: 'cubicIn' });
+                        .to(lowerTime, { position: cupPos, eulerAngles: initialEuler }, { easing: 'cubicIn' });
                     tCupLower.start();
                     
                     // Add wobble effect when jar returns
@@ -745,6 +762,7 @@ export class CupShuffleGame extends Component {
                             if (this.ball) {
                                 this.ball.active = false;
                             }
+                            this.setLiftExtrasActive(false);
                             
                             const finish = () => {
                                 if (onComplete) {
@@ -989,6 +1007,14 @@ export class CupShuffleGame extends Component {
                 sprite.color = Color.WHITE;
             }
             this.highlightedCup = null;
+        }
+    }
+
+    private setLiftExtrasActive(active: boolean) {
+        for (let i = 0; i < this.liftExtras.length; i++) {
+            if (this.liftExtras[i]) {
+                this.liftExtras[i].active = active;
+            }
         }
     }
 
