@@ -197,7 +197,7 @@
     "_priority": 1073741824,
     "_fov": 45,
     "_fovAxis": 0,
-    "_orthoHeight": 320,
+    "_orthoHeight": 384,
     "_near": 1,
     "_far": 2000,
     "_color": {
@@ -905,7 +905,7 @@
     "_lpos": {
       "__type__": "cc.Vec3",
       "x": 345.962,
-      "y": -91.221,
+      "y": -90,
       "z": -2
     },
     "_lrot": {
@@ -1280,8 +1280,8 @@
       "y": 0,
       "z": 0
     },
-    "idleAnimationAmplitude": 3,
-    "idleAnimationSpeed": 1.5,
+    "idleAnimationAmplitude": 6,
+    "idleAnimationSpeed": 1,
     "_id": "2dthQXlMVJ1K7PyBUm1WMp"
   },
   {

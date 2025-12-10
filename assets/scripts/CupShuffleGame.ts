@@ -474,32 +474,32 @@ export class CupShuffleGame extends Component {
         // Store initial hand position
         const handInitialPos = hand ? (hand as any).initialPosition || hand.position.clone() : null;
         
-        // Animation timing
-        const grabTime = 0.3; // Time for hand to grab
-        const liftTime = 0.4; // Time to lift jar
-        const revealTime = 0.5; // Time to show result
-        const lowerTime = 0.3; // Time to lower jar back
+        // Animation timing - smoother and more realistic
+        const grabTime = 0.35; // Time for hand to grab (slightly longer for smoothness)
+        const liftTime = 0.5; // Time to lift jar (smoother)
+        const revealTime = 0.6; // Time to show result
+        const lowerTime = 0.4; // Time to lower jar back (smoother)
         
-        // Phase 1: Hand moves to grab the jar
-        if (hand) {
+            // Phase 1: Hand moves to grab the jar (smoother animation)
+            if (hand) {
             const tHandGrab = tween(hand)
-                .to(grabTime, { position: handGrabPos }, { easing: 'sineOut' });
+                .to(grabTime, { position: handGrabPos }, { easing: 'cubicOut' });
             
             tHandGrab.start();
             
-            // Phase 2: Lift the jar up (synchronized with hand)
+            // Phase 2: Lift the jar up (synchronized with hand, smoother)
             this.scheduleOnce(() => {
                 const tCupLift = tween(clickedCup)
-                    .to(liftTime, { position: liftedCupPos }, { easing: 'sineOut' });
+                    .to(liftTime, { position: liftedCupPos }, { easing: 'cubicOut' });
                 
-                // Hand follows the jar up
+                // Hand follows the jar up (smoother)
                 const handLiftedPos = new Vec3(
                     handGrabPos.x,
                     handGrabPos.y + liftHeight,
                     handGrabPos.z
                 );
                 const tHandLift = tween(hand)
-                    .to(liftTime, { position: handLiftedPos }, { easing: 'sineOut' });
+                    .to(liftTime, { position: handLiftedPos }, { easing: 'cubicOut' });
                 
                 tCupLift.start();
                 tHandLift.start();
@@ -507,8 +507,8 @@ export class CupShuffleGame extends Component {
                 // Phase 3: Reveal the ball immediately when jar is lifted (or show empty)
                 this.scheduleOnce(() => {
                     if (isCorrect && this.ball && this.ballCup) {
-                        // Show ball under the lifted jar (positioned down/low)
-                        const ballPos = new Vec3(liftedCupPos.x, liftedCupPos.y - 80, liftedCupPos.z);
+                        // Show ball with fixed Y position at -90
+                        const ballPos = new Vec3(liftedCupPos.x, -90, liftedCupPos.z);
                         this.ball.setPosition(ballPos);
                         this.ball.active = true;
                     }
@@ -524,53 +524,91 @@ export class CupShuffleGame extends Component {
                         }
                     }
                     
-                    // Phase 4: Lower jar back down
+                    // Phase 4: Lower jar back down with wobble effect
                     this.scheduleOnce(() => {
+                        // Lower jar smoothly
                         const tCupLower = tween(clickedCup)
-                            .to(lowerTime, { position: cupPos }, { easing: 'sineIn' });
+                            .to(lowerTime, { position: cupPos }, { easing: 'cubicIn' });
                         
-                        // Hand returns to initial position
+                        // Hand returns to initial position (smoother)
                         if (hand && handInitialPos) {
                             const tHandReturn = tween(hand)
-                                .to(lowerTime, { position: handInitialPos }, { easing: 'sineIn' });
+                                .to(lowerTime, { position: handInitialPos }, { easing: 'cubicIn' });
                             tHandReturn.start();
                         }
                         
                         tCupLower.start();
                         
-                        // After lowering, restart game
+                        // Add wobble/jitter effect when jar reaches original position
                         this.scheduleOnce(() => {
-                            // Hide ball before restarting (it will be placed under correct cup in next round)
-                            if (this.ball) {
-                                this.ball.active = false;
-                            }
+                            // Wobble effect - more noticeable random movements for realism
+                            const wobbleAmount = 8; // How much to wobble (increased for visibility)
+                            const wobbleDuration = 0.2; // Duration of each wobble (slightly longer)
+                            const wobbleCount = 4; // Number of wobbles (more wobbles)
                             
-                            // Restart game after delay
-                            if (isCorrect) {
-                                this.scheduleOnce(() => {
-                                    this.onStart();
-                                }, 0.5);
-                            } else {
-                                this.consecutiveWins = 0;
-                                this.resetDifficulty();
-                                this.scheduleOnce(() => {
-                                    this.onStart();
-                                }, 1.0);
-                            }
-                        }, lowerTime + 0.2);
+                            let wobbleIndex = 0;
+                            const performWobble = () => {
+                                if (wobbleIndex >= wobbleCount) return;
+                                
+                                // Random offset for wobble (more noticeable)
+                                const wobbleX = (Math.random() - 0.5) * wobbleAmount;
+                                const wobbleY = (Math.random() - 0.5) * wobbleAmount * 0.6; // Slightly more vertical wobble
+                                const wobblePos = new Vec3(
+                                    cupPos.x + wobbleX,
+                                    cupPos.y + wobbleY,
+                                    cupPos.z
+                                );
+                                
+                                // Quick wobble animation
+                                const tWobble = tween(clickedCup)
+                                    .to(wobbleDuration * 0.5, { position: wobblePos }, { easing: 'sineInOut' })
+                                    .to(wobbleDuration * 0.5, { position: cupPos }, { easing: 'sineInOut' })
+                                    .call(() => {
+                                        wobbleIndex++;
+                                        if (wobbleIndex < wobbleCount) {
+                                            performWobble();
+                                        }
+                                    });
+                                
+                                tWobble.start();
+                            };
+                            
+                            performWobble();
+                            
+                            // After wobble completes, restart game
+                            this.scheduleOnce(() => {
+                                // Hide ball before restarting (it will be placed under correct cup in next round)
+                                if (this.ball) {
+                                    this.ball.active = false;
+                                }
+                                
+                                // Restart game after delay
+                                if (isCorrect) {
+                                    this.scheduleOnce(() => {
+                                        this.onStart();
+                                    }, 0.5);
+                                } else {
+                                    this.consecutiveWins = 0;
+                                    this.resetDifficulty();
+                                    this.scheduleOnce(() => {
+                                        this.onStart();
+                                    }, 1.0);
+                                }
+                            }, wobbleDuration * wobbleCount + 0.1);
+                        }, lowerTime);
                     }, revealTime);
                 }, liftTime);
             }, grabTime);
         } else {
-            // Fallback: no hand, just lift jar
+            // Fallback: no hand, just lift jar (with smoother animations)
             const tCupLift = tween(clickedCup)
-                .to(liftTime, { position: liftedCupPos }, { easing: 'sineOut' });
+                .to(liftTime, { position: liftedCupPos }, { easing: 'cubicOut' });
             tCupLift.start();
             
             this.scheduleOnce(() => {
-                // Reveal ball immediately when lifted (if correct)
+                // Reveal ball immediately when lifted (if correct) - fixed Y at -90
                 if (isCorrect && this.ball && this.ballCup) {
-                    const ballPos = new Vec3(liftedCupPos.x, liftedCupPos.y - 80, liftedCupPos.z);
+                    const ballPos = new Vec3(liftedCupPos.x, -90, liftedCupPos.z);
                     this.ball.setPosition(ballPos);
                     this.ball.active = true;
                 }
@@ -587,27 +625,61 @@ export class CupShuffleGame extends Component {
                 
                 this.scheduleOnce(() => {
                     const tCupLower = tween(clickedCup)
-                        .to(lowerTime, { position: cupPos }, { easing: 'sineIn' });
+                        .to(lowerTime, { position: cupPos }, { easing: 'cubicIn' });
                     tCupLower.start();
                     
+                    // Add wobble effect when jar returns
                     this.scheduleOnce(() => {
-                        // Hide ball before restarting
-                        if (this.ball) {
-                            this.ball.active = false;
-                        }
+                        const wobbleAmount = 8; // Increased for more visibility
+                        const wobbleDuration = 0.2; // Slightly longer
+                        const wobbleCount = 4; // More wobbles
                         
-                        if (isCorrect) {
-                            this.scheduleOnce(() => {
-                                this.onStart();
-                            }, 0.5);
-                        } else {
-                            this.consecutiveWins = 0;
-                            this.resetDifficulty();
-                            this.scheduleOnce(() => {
-                                this.onStart();
-                            }, 1.0);
-                        }
-                    }, lowerTime + 0.2);
+                        let wobbleIndex = 0;
+                        const performWobble = () => {
+                            if (wobbleIndex >= wobbleCount) return;
+                            
+                            const wobbleX = (Math.random() - 0.5) * wobbleAmount;
+                            const wobbleY = (Math.random() - 0.5) * wobbleAmount * 0.6; // More vertical wobble
+                            const wobblePos = new Vec3(
+                                cupPos.x + wobbleX,
+                                cupPos.y + wobbleY,
+                                cupPos.z
+                            );
+                            
+                            const tWobble = tween(clickedCup)
+                                .to(wobbleDuration * 0.5, { position: wobblePos }, { easing: 'sineInOut' })
+                                .to(wobbleDuration * 0.5, { position: cupPos }, { easing: 'sineInOut' })
+                                .call(() => {
+                                    wobbleIndex++;
+                                    if (wobbleIndex < wobbleCount) {
+                                        performWobble();
+                                    }
+                                });
+                            
+                            tWobble.start();
+                        };
+                        
+                        performWobble();
+                        
+                        this.scheduleOnce(() => {
+                            // Hide ball before restarting
+                            if (this.ball) {
+                                this.ball.active = false;
+                            }
+                            
+                            if (isCorrect) {
+                                this.scheduleOnce(() => {
+                                    this.onStart();
+                                }, 0.5);
+                            } else {
+                                this.consecutiveWins = 0;
+                                this.resetDifficulty();
+                                this.scheduleOnce(() => {
+                                    this.onStart();
+                                }, 1.0);
+                            }
+                        }, wobbleDuration * wobbleCount + 0.1);
+                    }, lowerTime);
                 }, revealTime);
             }, liftTime);
         }
@@ -637,7 +709,7 @@ export class CupShuffleGame extends Component {
     private placeBallUnderCup(index: number) {
         if (!this.ball || !this.cups[index]) return;
         const cupPos = this.cups[index].position.clone();
-        cupPos.y -= 65;        // adjust if needed
+        cupPos.y = -90;        // Fixed Y position at -90
         this.ball.setPosition(cupPos);
     }
 
