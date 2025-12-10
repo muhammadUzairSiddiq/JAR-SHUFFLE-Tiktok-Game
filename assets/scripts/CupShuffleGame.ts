@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, tween, Vec3, Label, math, EventTouch, UITransform, EventMouse, Sprite, input, Input, Camera, view, Vec2, Color } from 'cc';
+import { _decorator, Component, Node, tween, Vec3, Label, math, EventTouch, UITransform, EventMouse, Sprite, input, Input, Camera, view, Vec2, Color, Canvas, find, Graphics } from 'cc';
 const { ccclass, property } = _decorator;
 
 @ccclass('CupShuffleGame')
@@ -46,8 +46,41 @@ export class CupShuffleGame extends Component {
     @property
     ballYPosition: number = -90; // Fixed Y-axis position for the ball
 
+    @property
+    clickCalibrationOffsetX: number = 0; // X offset to calibrate click detection (adjust in editor if clicks are offset)
+    
+    @property
+    clickCalibrationOffsetY: number = 0; // Y offset to calibrate click detection (adjust in editor if clicks are offset)
+
+    @property
+    jar0XPositionOffset: number = 0; // Jar 0 (leftmost) - X-axis position offset (negative = left, positive = right)
+    @property
+    jar0LeftAdjust: number = 0; // Jar 0 (leftmost) - reduce left side (positive value)
+    @property
+    jar0RightAdjust: number = 0; // Jar 0 (leftmost) - reduce right side (positive value)
+    
+    @property
+    jar1XPositionOffset: number = 0; // Jar 1 (middle) - X-axis position offset (negative = left, positive = right)
+    @property
+    jar1LeftAdjust: number = 0; // Jar 1 (middle) - reduce left side (positive value)
+    @property
+    jar1RightAdjust: number = 100; // Jar 1 (middle) - reduce right side (positive value) - INCREASE THIS to fix Jar 002
+    
+    @property
+    jar2XPositionOffset: number = -120; // Jar 2 (rightmost) - X-axis position offset (negative = left, positive = right) - Set to -120 to move 120px left
+    @property
+    jar2LeftAdjust: number = 50; // Jar 2 (rightmost) - reduce left side (positive value) - INCREASE THIS to fix Jar 003
+    @property
+    jar2RightAdjust: number = 0; // Jar 2 (rightmost) - reduce right side (positive value)
+
+    @property
+    showClickableAreas: boolean = true; // Show visual rectangles for clickable areas (for debugging)
+
     @property(Color)
     highlightColor: Color = new Color(255, 105, 180, 160); // Tint for clicked jar
+    
+    @property(Color)
+    clickableAreaColor: Color = new Color(0, 255, 0, 100); // Color for clickable area visualization
 
     private ballIndex: number = 1;
     private ballCup: Node | null = null; // Track which cup node has the ball
@@ -59,6 +92,8 @@ export class CupShuffleGame extends Component {
     private idleTweens: any[] = []; // Store idle animation tweens
     private demoShown = false;
     private highlightedCup: Node | null = null;
+    private clickProcessed = false; // Flag to prevent double processing of clicks
+    private clickableAreaGraphics: Graphics[] = []; // Graphics components for visualizing clickable areas
 
     onLoad() {
         // Start button removed - game auto-starts
@@ -74,6 +109,9 @@ export class CupShuffleGame extends Component {
         
         // Setup cup click listeners
         this.setupCupListeners();
+        
+        // Setup clickable area visualization
+        this.setupClickableAreaVisualization();
         
         // Ensure result label starts empty and ball hidden
         if (this.resultLabel) {
@@ -121,11 +159,16 @@ export class CupShuffleGame extends Component {
     }
     
     private onGlobalTouch(event: EventTouch) {
+        // Reset flag at start of new input
+        if (event.getID() === 0) { // First touch in sequence
+            this.clickProcessed = false;
+        }
+        
         const location = event.getLocation();
         console.log(`Global TOUCH_END at: ${location.x}, ${location.y}, waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
         
-        if (!this.waitingForInput || this.isShuffling) {
-            console.log('Global touch ignored - not ready');
+        if (!this.waitingForInput || this.isShuffling || this.clickProcessed) {
+            console.log('Global touch ignored - not ready or already processed');
             return;
         }
         
@@ -133,11 +176,14 @@ export class CupShuffleGame extends Component {
     }
     
     private onGlobalMouse(event: EventMouse) {
+        // Reset flag for new mouse click
+        this.clickProcessed = false;
+        
         const location = event.getLocation();
         console.log(`Global MOUSE_UP at: ${location.x}, ${location.y}, waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
         
-        if (!this.waitingForInput || this.isShuffling) {
-            console.log('Global mouse ignored - not ready');
+        if (!this.waitingForInput || this.isShuffling || this.clickProcessed) {
+            console.log('Global mouse ignored - not ready or already processed');
             return;
         }
         
@@ -145,74 +191,120 @@ export class CupShuffleGame extends Component {
     }
     
     private checkGlobalClick(screenPos: Vec2) {
-        const camera = Camera.main || this.node.scene?.getComponentInChildren(Camera);
+        // Find Canvas component for proper UI coordinate conversion
+        const canvas = this.node.scene?.getComponentInChildren(Canvas);
+        if (!canvas) {
+            console.log('No Canvas found for global click');
+            return;
+        }
+        
+        const canvasNode = canvas.node;
+        const canvasUITransform = canvasNode.getComponent(UITransform);
+        if (!canvasUITransform) {
+            console.log('Canvas has no UITransform');
+            return;
+        }
+        
+        const camera = canvas.cameraComponent || Camera.main;
         if (!camera) {
             console.log('No camera found for global click');
             return;
         }
         
-        // Get Canvas node (cups are children of Canvas)
-        const canvasNode = this.node.scene?.getComponentInChildren('cc.Canvas')?.node;
-        if (!canvasNode) {
-            console.log('No Canvas found');
-            return;
-        }
-        
-        // Convert screen to world using camera
-        const screenVec3 = new Vec3(screenPos.x, screenPos.y, -camera.node.worldPosition.z);
-        const worldPos = new Vec3();
-        camera.screenToWorld(worldPos, screenVec3);
-        
-        // If that doesn't work, try manual conversion with Canvas position
+        // Get screen and design resolution
         const screenSize = view.getVisibleSize();
-        if (Math.abs(worldPos.x) < 1 && Math.abs(worldPos.y) < 1) {
-            const orthoHeight = camera.orthoHeight || 320;
-            const aspect = screenSize.width / screenSize.height;
-            const orthoWidth = orthoHeight * aspect;
-            const canvasPos = canvasNode.worldPosition;
-            
-            // Convert screen to Canvas local space
-            const normalizedX = (screenPos.x / screenSize.width - 0.5) * 2;
-            const normalizedY = ((screenSize.height - screenPos.y) / screenSize.height - 0.5) * 2;
-            
-            // World position relative to Canvas
-            worldPos.x = canvasPos.x + normalizedX * (orthoWidth / 2);
-            worldPos.y = canvasPos.y + normalizedY * (orthoHeight / 2);
-            worldPos.z = 0;
-        }
+        const designSize = view.getDesignResolutionSize();
         
-        console.log(`Screen: (${screenPos.x}, ${screenPos.y}) -> World: (${worldPos.x.toFixed(1)}, ${worldPos.y.toFixed(1)})`);
+        // Get Canvas size and anchor
+        const canvasSize = canvasUITransform.contentSize;
+        const canvasAnchor = canvasUITransform.anchorPoint;
         
-        // Check each cup using world-space bounds
-        for (let i = 0; i < this.cups.length; i++) {
+        // Convert screen coordinates to Canvas local coordinates
+        // Screen (0,0) is top-left, Canvas local (0,0) is at anchor point (typically center 0.5, 0.5)
+        const normalizedX = screenPos.x / screenSize.width;
+        const normalizedY = 1.0 - (screenPos.y / screenSize.height); // Flip Y axis (screen Y increases downward)
+        
+        // Convert normalized [0,1] to Canvas local coordinates
+        // Canvas local space: X ranges from -width*anchor.x to width*(1-anchor.x)
+        // For anchor (0.5, 0.5): X ranges from -width/2 to width/2
+        let canvasX = (normalizedX - 0.5) * canvasSize.width;
+        let canvasY = (normalizedY - 0.5) * canvasSize.height;
+        
+        // Apply calibration offset (user can adjust in editor to fix offset issues)
+        canvasX += this.clickCalibrationOffsetX;
+        canvasY += this.clickCalibrationOffsetY;
+        
+        console.log(`Screen: (${screenPos.x.toFixed(1)}, ${screenPos.y.toFixed(1)}) -> Normalized: (${normalizedX.toFixed(3)}, ${normalizedY.toFixed(3)}) -> Canvas: (${canvasX.toFixed(1)}, ${canvasY.toFixed(1)})`);
+        
+        // Check cups in reverse order (right to left) so rightmost cup is checked first
+        // This prevents overlap issues where a click on the right side might match an earlier cup
+        for (let i = this.cups.length - 1; i >= 0; i--) {
             const cup = this.cups[i];
-            if (!cup || !cup.active) continue;
+            if (!cup || !cup.active) {
+                console.log(`Cup ${i} is null or inactive`);
+                continue;
+            }
             
             const uiTransform = cup.getComponent(UITransform);
-            if (!uiTransform) continue;
+            if (!uiTransform) {
+                console.log(`Cup ${i} has no UITransform`);
+                continue;
+            }
             
-            // Get cup's world position and calculate bounds
-            const cupWorldPos = cup.worldPosition;
-            const cupSize = uiTransform.contentSize;
-            const cupScale = cup.worldScale;
+            // Get cup's position in Canvas local space (cup.position is relative to Canvas if cup is child of Canvas)
+            let cupCanvasX = cup.position.x;
+            const cupCanvasY = cup.position.y;
+            
+            // Apply X-axis position offset for this jar
+            if (i === 0) {
+                cupCanvasX += this.jar0XPositionOffset;
+            } else if (i === 1) {
+                cupCanvasX += this.jar1XPositionOffset;
+            } else if (i === 2) {
+                cupCanvasX += this.jar2XPositionOffset;
+            }
+            
+            // Get cup's size and anchor
+            const size = uiTransform.contentSize;
             const anchor = uiTransform.anchorPoint;
+            const scale = cup.scale;
             
-            // Calculate world-space bounds
-            const width = cupSize.width * cupScale.x;
-            const height = cupSize.height * cupScale.y;
-            const left = cupWorldPos.x - width * anchor.x;
-            const right = cupWorldPos.x + width * (1 - anchor.x);
-            const bottom = cupWorldPos.y - height * anchor.y;
-            const top = cupWorldPos.y + height * (1 - anchor.y);
+            // Calculate bounds in Canvas space
+            const width = size.width * scale.x;
+            const height = size.height * scale.y;
             
-            const inBoundsX = worldPos.x >= left && worldPos.x <= right;
-            const inBoundsY = worldPos.y >= bottom && worldPos.y <= top;
+            // Get bounds adjustments for this specific jar
+            let leftAdjust = 0;
+            let rightAdjust = 0;
             
-            console.log(`Cup ${i}: pos(${cupWorldPos.x.toFixed(1)}, ${cupWorldPos.y.toFixed(1)}), bounds(${left.toFixed(1)}, ${right.toFixed(1)}, ${bottom.toFixed(1)}, ${top.toFixed(1)})`);
-            console.log(`  Click(${worldPos.x.toFixed(1)}, ${worldPos.y.toFixed(1)}) in? X:${inBoundsX} Y:${inBoundsY}`);
+            if (i === 0) {
+                leftAdjust = this.jar0LeftAdjust;
+                rightAdjust = this.jar0RightAdjust;
+            } else if (i === 1) {
+                // Middle jar: 0% from left, 50% reduction from right side
+                leftAdjust = this.jar1LeftAdjust;
+                rightAdjust = this.jar1RightAdjust + (width * 0.5); // Reduce right side by 50%
+            } else if (i === 2) {
+                // Rightmost jar: increase right side clickable area by 50%
+                leftAdjust = this.jar2LeftAdjust;
+                rightAdjust = this.jar2RightAdjust - (width * 0.5); // Negative value expands right side by 50%
+            }
+            
+            // Apply adjustments: positive values reduce the side (move it inward)
+            const left = cupCanvasX - width * anchor.x + leftAdjust;
+            const right = cupCanvasX + width * (1 - anchor.x) - rightAdjust;
+            const bottom = cupCanvasY - height * anchor.y;
+            const top = cupCanvasY + height * (1 - anchor.y);
+            
+            // Check if click is within bounds (inclusive bounds)
+            const inBoundsX = canvasX >= left && canvasX <= right;
+            const inBoundsY = canvasY >= bottom && canvasY <= top;
+            
+            console.log(`Cup ${i}: CanvasPos(${cupCanvasX.toFixed(1)}, ${cupCanvasY.toFixed(1)}), Size(${width.toFixed(1)}x${height.toFixed(1)}), Adjustments(L:+${leftAdjust.toFixed(0)}, R:-${rightAdjust.toFixed(0)}), Bounds(L:${left.toFixed(1)}, R:${right.toFixed(1)}, B:${bottom.toFixed(1)}, T:${top.toFixed(1)}), Click(${canvasX.toFixed(1)}, ${canvasY.toFixed(1)}), inBounds: X:${inBoundsX} Y:${inBoundsY}`);
             
             if (inBoundsX && inBoundsY) {
                 console.log(`✓ Click detected on cup ${i}!`);
+                this.clickProcessed = true; // Mark as processed
                 this.onCupClicked(i, null);
                 return;
             }
@@ -257,8 +349,11 @@ export class CupShuffleGame extends Component {
             cup.off(Node.EventType.TOUCH_START);
             cup.off(Node.EventType.TOUCH_END);
             cup.off(Node.EventType.TOUCH_MOVE);
+            cup.off(Node.EventType.TOUCH_CANCEL);
             cup.off(Node.EventType.MOUSE_DOWN);
             cup.off(Node.EventType.MOUSE_UP);
+            cup.off(Node.EventType.MOUSE_ENTER);
+            cup.off(Node.EventType.MOUSE_LEAVE);
             
             // Create click handler
             const cupIndex = i; // Capture for closure
@@ -266,12 +361,15 @@ export class CupShuffleGame extends Component {
                 console.log(`Cup ${cupIndex} event received! waitingForInput: ${this.waitingForInput}, isShuffling: ${this.isShuffling}`);
                 
                 // Only process if waiting for input and not shuffling
-                if (!this.waitingForInput || this.isShuffling) {
-                    console.log(`Cup ${cupIndex} click ignored - not ready for input`);
+                if (!this.waitingForInput || this.isShuffling || this.clickProcessed) {
+                    console.log(`Cup ${cupIndex} click ignored - not ready for input or already processed`);
                     return;
                 }
                 
-                // Stop event propagation to prevent background clicks
+                // Mark as processed to prevent double handling
+                this.clickProcessed = true;
+                
+                // Stop event propagation to prevent background clicks and multiple triggers
                 if (event instanceof EventTouch) {
                     event.propagationStopped = true;
                 } else if (event instanceof EventMouse) {
@@ -282,21 +380,131 @@ export class CupShuffleGame extends Component {
                 this.onCupClicked(cupIndex, event instanceof EventTouch ? event : null);
             };
             
-            // Add both touch and mouse events
+            // Add both touch and mouse events - use TOUCH_END and MOUSE_UP for click detection
+            // Also add TOUCH_START to catch all touch events
+            cup.on(Node.EventType.TOUCH_START, (event: EventTouch) => {
+                console.log(`Cup ${cupIndex} TOUCH_START received`);
+            }, this);
             cup.on(Node.EventType.TOUCH_END, handleClick, this);
+            cup.on(Node.EventType.MOUSE_DOWN, (event: EventMouse) => {
+                console.log(`Cup ${cupIndex} MOUSE_DOWN received`);
+            }, this);
             cup.on(Node.EventType.MOUSE_UP, handleClick, this);
             
-            // Also add to children if they exist (sprites might be in children)
-            for (let j = 0; j < cup.children.length; j++) {
-                const child = cup.children[j];
-                child.off(Node.EventType.TOUCH_END);
-                child.off(Node.EventType.MOUSE_UP);
-                child.on(Node.EventType.TOUCH_END, handleClick, this);
-                child.on(Node.EventType.MOUSE_UP, handleClick, this);
-            }
+            // Also add to all children recursively (sprites might be in nested children)
+            const setupChildListeners = (node: Node) => {
+                for (let j = 0; j < node.children.length; j++) {
+                    const child = node.children[j];
+                    if (!child) continue;
+                    
+                    // Remove existing listeners
+                    child.off(Node.EventType.TOUCH_END);
+                    child.off(Node.EventType.MOUSE_UP);
+                    
+                    // Add listeners
+                    child.on(Node.EventType.TOUCH_END, handleClick, this);
+                    child.on(Node.EventType.MOUSE_UP, handleClick, this);
+                    
+                    // Recursively setup children
+                    setupChildListeners(child);
+                }
+            };
+            
+            setupChildListeners(cup);
             
             const finalSize = uiTransform ? `${uiTransform.contentSize.width}x${uiTransform.contentSize.height}` : 'none';
             console.log(`Cup ${i} listener setup complete. UITransform size: ${finalSize}, Active: ${cup.active}`);
+        }
+    }
+
+    private setupClickableAreaVisualization() {
+        // Clear existing graphics
+        for (let i = 0; i < this.clickableAreaGraphics.length; i++) {
+            if (this.clickableAreaGraphics[i] && this.clickableAreaGraphics[i].node) {
+                this.clickableAreaGraphics[i].node.destroy();
+            }
+        }
+        this.clickableAreaGraphics = [];
+        
+        if (!this.showClickableAreas) return;
+        
+        // Find Canvas to attach visualization
+        const canvas = this.node.scene?.getComponentInChildren(Canvas);
+        if (!canvas) return;
+        
+        const canvasNode = canvas.node;
+        const canvasUITransform = canvasNode.getComponent(UITransform);
+        if (!canvasUITransform) return;
+        
+        // Create visualization for each cup
+        for (let i = 0; i < this.cups.length; i++) {
+            const cup = this.cups[i];
+            if (!cup || !cup.active) continue;
+            
+            const uiTransform = cup.getComponent(UITransform);
+            if (!uiTransform) continue;
+            
+            // Get cup position with X-axis offset applied
+            let cupPosX = cup.position.x;
+            if (i === 0) {
+                cupPosX += this.jar0XPositionOffset;
+            } else if (i === 1) {
+                cupPosX += this.jar1XPositionOffset;
+            } else if (i === 2) {
+                cupPosX += this.jar2XPositionOffset;
+            }
+            
+            // Create a child node for the visualization
+            const vizNode = new Node(`ClickableArea_${i}`);
+            vizNode.setParent(canvasNode);
+            vizNode.setPosition(new Vec3(cupPosX, cup.position.y, cup.position.z));
+            
+            // Add Graphics component
+            const graphics = vizNode.addComponent(Graphics);
+            this.clickableAreaGraphics.push(graphics);
+            
+            // Get cup's bounds
+            const size = uiTransform.contentSize;
+            const anchor = uiTransform.anchorPoint;
+            const scale = cup.scale;
+            
+            const width = size.width * scale.x;
+            const height = size.height * scale.y;
+            
+            // Get bounds adjustments for this specific jar (matching click detection logic)
+            let leftAdjust = 0;
+            let rightAdjust = 0;
+            
+            if (i === 0) {
+                leftAdjust = this.jar0LeftAdjust;
+                rightAdjust = this.jar0RightAdjust;
+            } else if (i === 1) {
+                // Middle jar: 0% from left, 50% reduction from right side
+                leftAdjust = this.jar1LeftAdjust;
+                rightAdjust = this.jar1RightAdjust + (width * 0.5); // Reduce right side by 50%
+            } else if (i === 2) {
+                // Rightmost jar: increase right side clickable area by 50%
+                leftAdjust = this.jar2LeftAdjust;
+                rightAdjust = this.jar2RightAdjust - (width * 0.5); // Negative value expands right side by 50%
+            }
+            
+            // Calculate rectangle bounds (relative to anchor) with adjustments
+            const left = -width * anchor.x + leftAdjust;
+            const right = width * (1 - anchor.x) - rightAdjust;
+            const adjustedWidth = right - left;
+            const bottom = -height * anchor.y;
+            const top = height * (1 - anchor.y);
+            
+            // Draw rectangle showing clickable area (with adjustments)
+            graphics.strokeColor = this.clickableAreaColor;
+            graphics.fillColor = this.clickableAreaColor;
+            graphics.lineWidth = 2;
+            graphics.rect(left, bottom, adjustedWidth, height);
+            graphics.fill();
+            graphics.stroke();
+            
+            // Set z-order to be behind cups but visible
+            vizNode.setSiblingIndex(0);
         }
     }
 
@@ -363,6 +571,7 @@ export class CupShuffleGame extends Component {
             }
 
             this.waitingForInput = true;
+            this.clickProcessed = false; // Reset click flag for new input round
             
             if (this.resultLabel) {
                 this.resultLabel.string = '';
