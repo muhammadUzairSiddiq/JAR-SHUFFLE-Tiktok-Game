@@ -43,6 +43,9 @@ export class CupShuffleGame extends Component {
     @property
     ballRevealDuration: number = 0.6; // How long the ball stays visible after reveal
 
+    @property
+    ballYPosition: number = -90; // Fixed Y-axis position for the ball
+
     @property(Color)
     highlightColor: Color = new Color(255, 105, 180, 160); // Tint for clicked jar
 
@@ -81,6 +84,7 @@ export class CupShuffleGame extends Component {
         }
         this.setLiftExtrasActive(false);
         
+        // Save initial values from editor - these are the defaults that will be restored on wrong answer
         this.baseSwapsPerRound = this.swapsPerRound;
         this.baseSwapSpeed = this.swapSpeed;
         
@@ -413,6 +417,12 @@ export class CupShuffleGame extends Component {
         // Check if user clicked the correct cup
         const isCorrect = (clickedIndex === winningCupIndex);
         
+        // Immediately reset speed to initial if wrong answer
+        if (!isCorrect) {
+            this.consecutiveWins = 0;
+            this.resetDifficulty();
+        }
+        
         // Animate jar lifting and reveal
         this.liftJarAndReveal(clickedIndex, winningCupIndex, isCorrect);
     }
@@ -554,8 +564,8 @@ export class CupShuffleGame extends Component {
                 // Phase 3: Reveal the ball immediately when jar is lifted (or show empty)
                 this.scheduleOnce(() => {
                     if (isCorrect && this.ball && this.ballCup) {
-                        // Show ball with fixed Y position at -90
-                        const ballPos = new Vec3(liftedCupPos.x, -90, liftedCupPos.z);
+                        // Show ball with fixed Y position
+                        const ballPos = new Vec3(liftedCupPos.x, this.ballYPosition, liftedCupPos.z);
                         this.ball.setPosition(ballPos);
                         this.ball.active = true;
                         // Auto-hide after configured duration
@@ -684,9 +694,9 @@ export class CupShuffleGame extends Component {
             tCupLift.start();
             
             this.scheduleOnce(() => {
-                // Reveal ball immediately when lifted (if correct) - fixed Y at -90
+                // Reveal ball immediately when lifted (if correct)
                 if (isCorrect && this.ball && this.ballCup) {
-                    const ballPos = new Vec3(liftedCupPos.x, -90, liftedCupPos.z);
+                    const ballPos = new Vec3(liftedCupPos.x, this.ballYPosition, liftedCupPos.z);
                     this.ball.setPosition(ballPos);
                     this.ball.active = true;
                     // Auto-hide after configured duration
@@ -777,8 +787,7 @@ export class CupShuffleGame extends Component {
                                         this.onStart(false);
                                     }, 0.5);
                                 } else {
-                                    this.consecutiveWins = 0;
-                                    this.resetDifficulty();
+                                    // Speed already reset immediately when wrong answer detected
                                     this.scheduleOnce(() => {
                                         this.onStart(false);
                                     }, 1.0);
@@ -796,6 +805,7 @@ export class CupShuffleGame extends Component {
     private updateDifficulty() {
         // Increase difficulty based on consecutive wins
         // More wins = more swaps and faster speed (harder to track)
+        // Only increases speed when consecutiveWins > 0 (correct answers in a row)
         const difficultyMultiplier = 1 + (this.consecutiveWins * 0.1);
         this.swapsPerRound = Math.floor(this.baseSwapsPerRound * difficultyMultiplier);
         
@@ -807,17 +817,21 @@ export class CupShuffleGame extends Component {
             this.swapsPerRound = Math.floor(this.baseSwapsPerRound * 2.5);
             this.swapSpeed = Math.max(0.12, this.baseSwapSpeed / 2.5);
         }
+        
+        console.log('Difficulty updated: consecutiveWins =', this.consecutiveWins, 'swapSpeed =', this.swapSpeed, 'swapsPerRound =', this.swapsPerRound);
     }
 
     private resetDifficulty() {
+        // Reset to initial values saved from editor
         this.swapsPerRound = this.baseSwapsPerRound;
         this.swapSpeed = this.baseSwapSpeed;
+        console.log('Difficulty reset to initial: swapSpeed =', this.swapSpeed, 'swapsPerRound =', this.swapsPerRound);
     }
 
     private placeBallUnderCup(index: number) {
         if (!this.ball || !this.cups[index]) return;
         const cupPos = this.cups[index].position.clone();
-        cupPos.y = -90;        // Fixed Y position at -90
+        cupPos.y = this.ballYPosition;        // Fixed Y position (editable in inspector)
         this.ball.setPosition(cupPos);
     }
 
