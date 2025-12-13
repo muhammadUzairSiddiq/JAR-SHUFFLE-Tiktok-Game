@@ -161,6 +161,9 @@ export class CupShuffleGame extends Component {
             console.log('CupShuffleGame: Initialized with', this.cups.length, 'cups');
         }
         
+        // Randomize jar positions at start (spawn them in random order)
+        this.randomizeJarPositions();
+        
         // Auto-start immediately
         // Start idle animations for hands
         this.startIdleAnimations();
@@ -174,6 +177,34 @@ export class CupShuffleGame extends Component {
             console.log('Auto-starting game...');
             this.onStart(true); // first round acts as demo
         }, 0.5);
+    }
+    
+    private randomizeJarPositions() {
+        if (this.cups.length === 0) return;
+        
+        // Collect all jar positions
+        const positions: Vec3[] = [];
+        for (let i = 0; i < this.cups.length; i++) {
+            if (this.cups[i]) {
+                positions.push(this.cups[i].position.clone());
+            }
+        }
+        
+        // Shuffle positions array using Fisher-Yates algorithm
+        for (let i = positions.length - 1; i > 0; i--) {
+            const j = math.randomRangeInt(0, i + 1);
+            [positions[i], positions[j]] = [positions[j], positions[i]];
+        }
+        
+        // Assign shuffled positions to jars
+        for (let i = 0; i < this.cups.length; i++) {
+            if (this.cups[i] && positions[i]) {
+                this.cups[i].setPosition(positions[i]);
+                console.log(`Jar ${this.cups[i].name} moved to position:`, positions[i]);
+            }
+        }
+        
+        console.log('Jar positions randomized at game start');
     }
     
     onDestroy() {
