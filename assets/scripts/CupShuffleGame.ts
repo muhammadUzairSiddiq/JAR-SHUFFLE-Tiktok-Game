@@ -29,7 +29,7 @@ export class CupShuffleGame extends Component {
     startingCoins: number = 2; // Starting coin reward (doubles on each win) - not used, always starts at 2
 
     @property
-    swapsPerRound: number = 10;
+    swapsPerRound: number = 2; // Start with 2 shuffles, increases by 1 on each correct answer
 
     @property
     swapSpeed: number = 0.35; // Speed controller - higher value = slower shuffle
@@ -95,14 +95,16 @@ export class CupShuffleGame extends Component {
     clickableAreaColor: Color = new Color(0, 255, 0, 100); // Color for clickable area visualization
 
     private ballIndex: number = 1;
-    private ballCup: Node | null = null; // Track which cup node has the ball
+    private ballCup: Node | null = null; // Track which cup node has the ball (for positioning)
+    private ballJarName: string = ''; // Track which jar NAME has the ball (e.g., "jar 001")
     private ball2Index: number = -1; // Track second ball index (-1 if not used)
-    private ball2Cup: Node | null = null; // Track which cup node has the second ball
+    private ball2Cup: Node | null = null; // Track which cup node has the second ball (for positioning)
+    private ball2JarName: string = ''; // Track which jar NAME has the second ball
     private isShuffling = false;
     private waitingForInput = false;
     private consecutiveWins = 0;
     private currentCoins: number = 0; // Current coin reward (starts at 0, becomes 2 on first win, then doubles)
-    private baseSwapsPerRound = 10;
+    private baseSwapsPerRound = 2; // Base shuffle count (starts at 2, increases by 1 on correct answer)
     private baseSwapSpeed = 0.35;
     private idleTweens: any[] = []; // Store idle animation tweens
     private demoShown = false;
@@ -564,24 +566,74 @@ export class CupShuffleGame extends Component {
             this.ball2.active = false; // stay hidden during shuffle
         }
 
-        // Random starting cup for ball(s)
-        this.ballIndex = math.randomRangeInt(0, this.cups.length);
-        this.ballCup = this.cups[this.ballIndex];
-        this.placeBallUnderCup(this.ballIndex);
+        // Ball is ALWAYS in jar 001 (by name) - find jar 001 and place ball there
+        let jar001Index = -1;
+        let jar001Node: Node | null = null;
         
-        // Place second ball if double balls enabled
-        if (this.enableDoubleBalls && this.ball2) {
-            // Place second ball in a different cup
-            let ball2Index = math.randomRangeInt(0, this.cups.length);
-            while (ball2Index === this.ballIndex && this.cups.length > 1) {
-                ball2Index = math.randomRangeInt(0, this.cups.length);
+        // Find jar 001 by name (could be "jar 001", "001", "jar001", "Jar 001", etc.)
+        for (let i = 0; i < this.cups.length; i++) {
+            const cup = this.cups[i];
+            if (cup) {
+                const cupNameLower = cup.name.toLowerCase().trim();
+                // Check if name contains "001" (case insensitive)
+                if (cupNameLower.includes('001')) {
+                    jar001Index = i;
+                    jar001Node = cup;
+                    break;
+                }
             }
-            this.ball2Index = ball2Index;
-            this.ball2Cup = this.cups[this.ball2Index];
-            this.placeBall2UnderCup(this.ball2Index);
+        }
+        
+        // If jar 001 not found, use first cup as fallback
+        if (jar001Index === -1) {
+            jar001Index = 0;
+            jar001Node = this.cups[0];
+            console.warn('Jar 001 not found by name, using first cup as fallback');
+        }
+        
+        // Always place ball in jar 001
+        this.ballIndex = jar001Index;
+        this.ballCup = jar001Node;
+        this.ballJarName = jar001Node ? jar001Node.name : '';
+        this.placeBallUnderCup(this.ballIndex);
+        console.log(`Ball placed in jar 001: name="${this.ballJarName}", index=${this.ballIndex}`);
+        
+        // Place second ball if double balls enabled (in a different jar, not jar 001)
+        if (this.enableDoubleBalls && this.ball2) {
+            // Find a jar that is NOT jar 001
+            let ball2Index = -1;
+            for (let i = 0; i < this.cups.length; i++) {
+                const cup = this.cups[i];
+                if (cup && cup !== jar001Node && !cup.name.includes('001')) {
+                    ball2Index = i;
+                    break;
+                }
+            }
+            // Fallback: use any jar that's not jar 001
+            if (ball2Index === -1) {
+                for (let i = 0; i < this.cups.length; i++) {
+                    if (i !== jar001Index) {
+                        ball2Index = i;
+                        break;
+                    }
+                }
+            }
+            
+            if (ball2Index >= 0) {
+                this.ball2Index = ball2Index;
+                this.ball2Cup = this.cups[this.ball2Index];
+                this.ball2JarName = this.ball2Cup ? this.ball2Cup.name : '';
+                this.placeBall2UnderCup(this.ball2Index);
+                console.log(`Second ball placed in: name="${this.ball2JarName}", index=${this.ball2Index}`);
+            } else {
+                this.ball2Index = -1;
+                this.ball2Cup = null;
+                this.ball2JarName = '';
+            }
         } else {
             this.ball2Index = -1;
             this.ball2Cup = null;
+            this.ball2JarName = '';
         }
 
         // Calculate difficulty based on consecutive wins
@@ -660,46 +712,49 @@ export class CupShuffleGame extends Component {
     private checkAnswer(clickedIndex: number) {
         this.waitingForInput = false;
         
-        // Find which cup node(s) have the ball(s)
-        let winningCupIndex1 = -1;
-        let winningCupIndex2 = -1;
+        // Get the clicked cup node (the actual jar that was clicked)
+        const clickedCup = this.cups[clickedIndex];
+        if (!clickedCup) {
+            console.error('Clicked cup not found at index:', clickedIndex);
+            return;
+        }
         
-        if (this.ballCup) {
+        // Check if the clicked jar is jar 001 (the jar that ALWAYS has the ball)
+        // Ball is ALWAYS in jar 001, so check if clicked jar name contains "001"
+        const clickedJarName = clickedCup.name;
+        const clickedJarNameLower = clickedJarName.toLowerCase().trim();
+        const clickedIsJar001 = clickedJarNameLower.includes('001');
+        
+        // For double balls: check if clicked jar is jar 001 OR the second ball jar
+        // For single ball: check if clicked jar is jar 001
+        let isCorrect = false;
+        if (this.enableDoubleBalls) {
+            // Check if clicked jar is jar 001 OR the second ball jar
+            const clickedIsBall2Jar = this.ball2JarName && (clickedJarName === this.ball2JarName);
+            isCorrect = clickedIsJar001 || clickedIsBall2Jar;
+        } else {
+            // Single ball: only jar 001 is correct
+            isCorrect = clickedIsJar001;
+        }
+        
+        // Find the index of jar 001 for reveal animation (need index for liftJarAndReveal)
+        let winningCupIndex = -1;
+        if (this.ballJarName) {
+            // Find jar 001 by name
             for (let i = 0; i < this.cups.length; i++) {
-                if (this.cups[i] === this.ballCup) {
-                    winningCupIndex1 = i;
+                if (this.cups[i] && (this.cups[i].name === this.ballJarName || this.cups[i].name.includes('001'))) {
+                    winningCupIndex = i;
                     break;
                 }
             }
         }
         
-        // Fallback to ballIndex if ballCup not found
-        if (winningCupIndex1 === -1) {
-            winningCupIndex1 = this.ballIndex;
+        // Fallback to ballIndex if not found
+        if (winningCupIndex === -1) {
+            winningCupIndex = this.ballIndex;
         }
         
-        // Find second ball position if double balls enabled
-        if (this.enableDoubleBalls && this.ball2Cup) {
-            for (let i = 0; i < this.cups.length; i++) {
-                if (this.cups[i] === this.ball2Cup) {
-                    winningCupIndex2 = i;
-                    break;
-                }
-            }
-            if (winningCupIndex2 === -1) {
-                winningCupIndex2 = this.ball2Index;
-            }
-        }
-        
-        // Check if user clicked a cup with a ball
-        // If double balls enabled, win if clicked cup has either ball
-        // Otherwise, win only if clicked cup has the first ball
-        const isCorrect = this.enableDoubleBalls 
-            ? (clickedIndex === winningCupIndex1 || clickedIndex === winningCupIndex2)
-            : (clickedIndex === winningCupIndex1);
-        
-        // Determine which winning cup to use for reveal (use first ball's position)
-        const winningCupIndex = winningCupIndex1;
+        console.log(`Answer check: clicked jar name="${clickedJarName}", is jar 001=${clickedIsJar001}, ball jar name="${this.ballJarName}", isCorrect=${isCorrect}`);
         
         // Immediately reset speed and coins to 0 if wrong answer
         if (!isCorrect) {
@@ -1160,20 +1215,12 @@ export class CupShuffleGame extends Component {
     }
 
     private updateDifficulty() {
-        // Increase difficulty based on consecutive wins
-        // More wins = more swaps and faster speed (harder to track)
-        // Only increases speed when consecutiveWins > 0 (correct answers in a row)
-        const difficultyMultiplier = 1 + (this.consecutiveWins * 0.1);
-        this.swapsPerRound = Math.floor(this.baseSwapsPerRound * difficultyMultiplier);
+        // Increase shuffle count by 1 for each correct answer
+        // Start with baseSwapsPerRound (2), then 3, 4, 5, etc.
+        this.swapsPerRound = this.baseSwapsPerRound + this.consecutiveWins;
         
         // Speed increases (lower value = faster, but cap at minimum for smoothness)
         this.swapSpeed = Math.max(0.15, this.baseSwapSpeed / (1 + (this.consecutiveWins * 0.12)));
-        
-        // After 10 wins, make it very difficult
-        if (this.consecutiveWins >= 10) {
-            this.swapsPerRound = Math.floor(this.baseSwapsPerRound * 2.5);
-            this.swapSpeed = Math.max(0.12, this.baseSwapSpeed / 2.5);
-        }
         
         console.log('Difficulty updated: consecutiveWins =', this.consecutiveWins, 'swapSpeed =', this.swapSpeed, 'swapsPerRound =', this.swapsPerRound);
     }
@@ -1331,19 +1378,34 @@ export class CupShuffleGame extends Component {
                     this.cups[a] = jarB;
                     this.cups[b] = jarA;
 
-                    // Update ball tracking
-                    if (this.ballCup === jarA) {
+                    // Update ball tracking - ball is ALWAYS in jar 001
+                    // When jars swap positions, find jar 001 and update its position
+                    const jarAName = jarA ? jarA.name.toLowerCase().trim() : '';
+                    const jarBName = jarB ? jarB.name.toLowerCase().trim() : '';
+                    
+                    // Check if jarA or jarB is jar 001 (by checking if name contains "001")
+                    const jarAIs001 = jarAName.includes('001');
+                    const jarBIs001 = jarBName.includes('001');
+                    
+                    if (jarAIs001) {
+                        // Jar 001 (jarA) moved to position b
                         this.ballIndex = b;
-                    } else if (this.ballCup === jarB) {
+                        this.ballCup = jarA; // Update to point to jar 001 at its new position
+                    } else if (jarBIs001) {
+                        // Jar 001 (jarB) moved to position a
                         this.ballIndex = a;
+                        this.ballCup = jarB; // Update to point to jar 001 at its new position
                     }
                     
                     // Update ball2 tracking if double balls enabled
-                    if (this.enableDoubleBalls && this.ball2Cup) {
-                        if (this.ball2Cup === jarA) {
+                    if (this.enableDoubleBalls && this.ball2JarName) {
+                        const ball2JarNameLower = this.ball2JarName.toLowerCase().trim();
+                        if (ball2JarNameLower === jarAName || jarAName.includes(ball2JarNameLower)) {
                             this.ball2Index = b;
-                        } else if (this.ball2Cup === jarB) {
+                            this.ball2Cup = jarA;
+                        } else if (ball2JarNameLower === jarBName || jarBName.includes(ball2JarNameLower)) {
                             this.ball2Index = a;
+                            this.ball2Cup = jarB;
                         }
                     }
 
@@ -1366,19 +1428,34 @@ export class CupShuffleGame extends Component {
                     this.cups[a] = jarB;
                     this.cups[b] = jarA;
 
-                    // Update ball tracking
-                    if (this.ballCup === jarA) {
+                    // Update ball tracking - ball is ALWAYS in jar 001
+                    // When jars swap positions, find jar 001 and update its position
+                    const jarAName = jarA ? jarA.name.toLowerCase().trim() : '';
+                    const jarBName = jarB ? jarB.name.toLowerCase().trim() : '';
+                    
+                    // Check if jarA or jarB is jar 001 (by checking if name contains "001")
+                    const jarAIs001 = jarAName.includes('001');
+                    const jarBIs001 = jarBName.includes('001');
+                    
+                    if (jarAIs001) {
+                        // Jar 001 (jarA) moved to position b
                         this.ballIndex = b;
-                    } else if (this.ballCup === jarB) {
+                        this.ballCup = jarA; // Update to point to jar 001 at its new position
+                    } else if (jarBIs001) {
+                        // Jar 001 (jarB) moved to position a
                         this.ballIndex = a;
+                        this.ballCup = jarB; // Update to point to jar 001 at its new position
                     }
                     
                     // Update ball2 tracking if double balls enabled
-                    if (this.enableDoubleBalls && this.ball2Cup) {
-                        if (this.ball2Cup === jarA) {
+                    if (this.enableDoubleBalls && this.ball2JarName) {
+                        const ball2JarNameLower = this.ball2JarName.toLowerCase().trim();
+                        if (ball2JarNameLower === jarAName || jarAName.includes(ball2JarNameLower)) {
                             this.ball2Index = b;
-                        } else if (this.ball2Cup === jarB) {
+                            this.ball2Cup = jarA;
+                        } else if (ball2JarNameLower === jarBName || jarBName.includes(ball2JarNameLower)) {
                             this.ball2Index = a;
+                            this.ball2Cup = jarB;
                         }
                     }
 
