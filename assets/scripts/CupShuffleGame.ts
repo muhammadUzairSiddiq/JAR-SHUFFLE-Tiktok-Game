@@ -587,28 +587,37 @@ export class CupShuffleGame extends Component {
         // Calculate difficulty based on consecutive wins
         this.updateDifficulty();
 
-        // Immediately shuffle
+        // For first demo round, skip shuffle and go straight to reveal
+        if (isDemoRound && !this.demoShown) {
+            this.demoShown = true;
+            this.waitingForInput = false;
+            // Reset isShuffling since we're not actually shuffling in demo round
+            this.isShuffling = false;
+            const winningIndex = this.ballIndex;
+            // Auto-reveal without shuffling first, then start a real round (which will shuffle)
+            this.liftJarAndReveal(
+                winningIndex,
+                winningIndex,
+                true,
+                () => { 
+                    // Reset state before starting next round
+                    this.isShuffling = false;
+                    this.waitingForInput = false;
+                    this.onStart(false); 
+                },
+                false,
+                false,
+                false // Not a user click
+            );
+            return;
+        }
+
+        // For all other rounds, shuffle first
         this.shuffleCups(this.swapsPerRound, () => {
             this.isShuffling = false;
             
             // Resume idle animations after shuffle
             this.startIdleAnimations();
-            
-            if (isDemoRound && !this.demoShown) {
-                this.demoShown = true;
-                this.waitingForInput = false;
-                const winningIndex = this.ballIndex;
-                // Auto-reveal using the same animation path as a user click, then start a real round
-                this.liftJarAndReveal(
-                    winningIndex,
-                    winningIndex,
-                    true,
-                    () => { this.onStart(false); },
-                    false,
-                    false
-                );
-                return;
-            }
 
             this.waitingForInput = true;
             this.clickProcessed = false; // Reset click flag for new input round
